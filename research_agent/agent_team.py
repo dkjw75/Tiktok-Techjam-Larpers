@@ -64,6 +64,11 @@ class LLMResearchTeam:
         schema = {"type": "object", "additionalProperties": False, "required": ["decision", "rationale"], "properties": {"decision": {"type": "string", "enum": ["refine", "explore", "restart"]}, "rationale": {"type": "string"}}}
         return self.client.create_json("You are the evidence-review specialist. Interpret GAUC and nDCG@5 and choose the next high-level action.", json.dumps(list(history[-8:])), schema=schema)
 
+    def verify_capability(self, proposal: BroadProposal, source: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        schema = {"type": "object", "additionalProperties": False, "required": ["decision", "rationale"], "properties": {"decision": {"type": "string", "enum": ["verified", "rejected", "needs_human_review"]}, "rationale": {"type": "string"}}}
+        prompt = json.dumps({"proposal": proposal.__dict__, "source": source})
+        return self.client.create_json("You are a capability verifier. Verify that the isolated candidate source implements the stated single change and has no imports, filesystem, network, test data, external data, or protected-file changes. Do not approve a source that merely calls the baseline without implementing the claimed change.", prompt, schema=schema)
+
 
 def build_isolated_candidate(source: str, workspace: Path) -> CandidateCallable:
     """Validate generated code and execute it with no imports or filesystem builtins."""

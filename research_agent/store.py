@@ -29,6 +29,7 @@ class ArtifactStore:
         self.iterations_path = self.root / "iterations.jsonl"
         self.metrics_path = self.root / "metrics.csv"
         self.interventions_path = self.root / "manual_interventions.jsonl"
+        self.capabilities_path = self.root / "capabilities.jsonl"
         self.patches_dir = self.root / "patches"
         self.runs_dir = self.root / "runs"
 
@@ -52,6 +53,12 @@ class ArtifactStore:
 
     def append_intervention(self, intervention: dict[str, Any]) -> None:
         self._append_jsonl(self.interventions_path, intervention)
+
+    def append_capability(self, capability: dict[str, Any]) -> None:
+        self._append_jsonl(self.capabilities_path, capability)
+
+    def read_capabilities(self) -> list[dict[str, Any]]:
+        return self._read_jsonl(self.capabilities_path)
 
     def append_metric_summary(self, summary: dict[str, Any]) -> None:
         self.initialize()

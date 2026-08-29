@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from .agent_team import LLMResearchTeam, build_isolated_candidate
+from .capabilities import CapabilityRegistry
 from .controller import ExperimentController
 from .llm_planner import LLMPlanningError
 from .logger import ResearchLogger
@@ -13,6 +14,7 @@ from .safety import ExperimentProposal
 class BroadAutonomousLoop:
     def __init__(self, controller: ExperimentController, logger: ResearchLogger, team: LLMResearchTeam) -> None:
         self.controller, self.logger, self.team = controller, logger, team
+        self.registry = CapabilityRegistry(logger.store)
 
     def run(self, max_cycles: int) -> int:
         completed = 0
@@ -37,12 +39,15 @@ class BroadAutonomousLoop:
             try:
                 candidate = build_isolated_candidate(source, workspace)
             except LLMPlanningError as exc:
-                if plan.area != "training":
-                    self.logger.log_action("generated_candidate_rejected", experiment_id=experiment_id, details={"error": str(exc), "llm": code_meta})
-                    continue
-                source = "def run_candidate(prepared, config, run_dir):\n    return run_torch_fm_candidate(prepared, config, run_dir)\n"
-                candidate = build_isolated_candidate(source, workspace)
-                self.logger.log_action("generated_candidate_recovered", experiment_id=experiment_id, details={"error": str(exc), "recovery": "used verified PyTorch FM training template for the approved training-only change", "llm": code_meta})
+                self.logger.log_action("generated_candidate_rejected", experiment_id=experiment_id, details={"error": str(exc), "llm": code_meta})
+                continue
+            verdict, verifier_meta = self.team.verify_capability(plan, source)
+            self.logger.log_action("capability_verifier_completed", experiment_id=experiment_id, details={**verdict, "llm": verifier_meta})
+            if verdict["decision"] != "verified":
+                self.logger.log_action("capability_not_registered", experiment_id=experiment_id, details={"reason": verdict["rationale"]})
+                continue
+            capability = self.registry.register(plan, source, verdict)
+            self.logger.log_action("capability_registered", experiment_id=experiment_id, details=capability)
             proposal = ExperimentProposal(
                 experiment_id=experiment_id,
                 parent_experiment_id=self.controller.state.current_best_experiment_id,

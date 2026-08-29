@@ -20,6 +20,8 @@ class FakeTeam:
         return Critique("approved", "safe"), {"model": "fake"}
     def code(self, _proposal):
         return "def run_candidate(prepared, config, run_dir):\n    return run_torch_fm_candidate(prepared, config, run_dir)\n", {"model": "fake"}
+    def verify_capability(self, _proposal, _source):
+        return {"decision": "verified", "rationale": "matches"}, {"model": "fake"}
     def review(self, _history):
         return {"decision": "explore", "rationale": "continue"}, {"model": "fake"}
 
