@@ -42,7 +42,7 @@ class BroadAutonomousLoop:
                 parent_experiment_id=self.controller.state.current_best_experiment_id,
                 hypothesis=plan.hypothesis,
                 rationale=plan.rationale,
-                config={"loss": "pointwise", "learning_rate": 0.001, "l2": 1e-6, "embedding_dim": 16, "batch_size": 8192, "seed": 0, "epochs": 4, "agent_change": plan.controlled_change},
+                config=_candidate_config(plan.controlled_change),
                 changed_factors=(plan.controlled_change,),
                 model_family=normalized_family,
                 research_direction_id=plan.area,
@@ -65,3 +65,9 @@ def _normalize_model_family(value: str) -> str:
     if "baseline model family" in normalized or "factorization machine" in normalized:
         return "fm"
     return normalized
+
+
+def _candidate_config(controlled_change: str) -> dict[str, Any]:
+    """Map a reviewed high-level loss proposal into the existing PyTorch FM interface."""
+    loss = "pairwise" if "pairwise" in controlled_change.lower() else "pointwise"
+    return {"loss": loss, "learning_rate": 0.001, "l2": 1e-6, "embedding_dim": 16, "batch_size": 8192, "seed": 0, "epochs": 4, "agent_change": controlled_change}

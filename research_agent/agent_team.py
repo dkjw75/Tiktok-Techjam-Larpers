@@ -56,7 +56,7 @@ class LLMResearchTeam:
 
     def code(self, proposal: BroadProposal) -> tuple[str, dict[str, Any]]:
         schema = {"type": "object", "additionalProperties": False, "required": ["source"], "properties": {"source": {"type": "string"}}}
-        instruction = "You are an isolated candidate-coding specialist. Return only a run_candidate(prepared, config, run_dir) function. No imports, files, network, subprocesses, eval/exec, test data, or external data. Use only injected run_torch_fm_candidate, torch, np, and the supplied arguments."
+        instruction = "You are an isolated candidate-coding specialist. Return plain Python source only (no Markdown): exactly a run_candidate(prepared, config, run_dir) function. No imports, files, network, subprocesses, eval/exec, test data, or external data. Use only injected run_torch_fm_candidate, torch, np, and the supplied arguments."
         data, meta = self.client.create_json(instruction, json.dumps(proposal.__dict__), schema=schema)
         return data["source"], meta
 
@@ -67,6 +67,9 @@ class LLMResearchTeam:
 
 def build_isolated_candidate(source: str, workspace: Path) -> CandidateCallable:
     """Validate generated code and execute it with no imports or filesystem builtins."""
+    source = _plain_source(source)
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "candidate.py").write_text(source, encoding="utf-8")
     tree = ast.parse(source, filename="candidate.py", mode="exec")
     forbidden = (ast.Import, ast.ImportFrom, ast.With, ast.Try, ast.Raise, ast.Global, ast.Nonlocal)
     for node in ast.walk(tree):
@@ -75,11 +78,17 @@ def build_isolated_candidate(source: str, workspace: Path) -> CandidateCallable:
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_candidate"]
     if len(functions) != 1:
         raise LLMPlanningError("generated candidate must define exactly one run_candidate function")
-    workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "candidate.py").write_text(source, encoding="utf-8")
     import numpy as np
     import torch
     from .models.torch_fm import run_torch_fm_candidate
-    scope: dict[str, Any] = {"__builtins__": {"len": len, "range": range, "int": int, "float": float, "min": min, "max": max, "sum": sum}, "run_torch_fm_candidate": run_torch_fm_candidate, "torch": torch, "np": np}
+    scope: dict[str, Any] = {"__builtins__": {"len": len, "range": range, "int": int, "float": float, "min": min, "max": max, "sum": sum, "dict": dict, "list": list, "tuple": tuple}, "run_torch_fm_candidate": run_torch_fm_candidate, "torch": torch, "np": np}
     exec(compile(tree, "candidate.py", "exec"), scope, scope)
     return scope["run_candidate"]
+
+
+def _plain_source(source: str) -> str:
+    """Remove an accidental Markdown code fence without accepting other prose."""
+    stripped = source.strip()
+    if stripped.startswith("```") and stripped.endswith("```"):
+        return "\n".join(stripped.splitlines()[1:-1]).strip() + "\n"
+    return source

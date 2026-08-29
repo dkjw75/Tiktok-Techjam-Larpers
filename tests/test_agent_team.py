@@ -20,3 +20,8 @@ class CandidateWorkspaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(LLMPlanningError):
                 build_isolated_candidate("import os\ndef run_candidate(prepared, config, run_dir):\n return None\n", Path(directory))
+
+    def test_markdown_fenced_source_is_normalized_before_validation(self):
+        source = "```python\ndef run_candidate(prepared, config, run_dir):\n    return run_torch_fm_candidate(prepared, config, run_dir)\n```"
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertTrue(callable(build_isolated_candidate(source, Path(directory))))
