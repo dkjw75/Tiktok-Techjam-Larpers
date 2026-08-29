@@ -23,7 +23,8 @@ class BroadAutonomousLoop:
             plan, meta = self.team.propose(history, self.controller.state.as_dict())
             self.logger.log_action("llm_broad_hypothesis_proposed", details={**plan.__dict__, "llm": meta})
             critique, critique_meta = self.team.critique(plan)
-            automatic = critique.decision == "approved" and not plan.requires_human_review and plan.model_family == "fm"
+            normalized_family = _normalize_model_family(plan.model_family)
+            automatic = critique.decision == "approved" and not plan.requires_human_review and normalized_family == "fm"
             self.logger.log_action("llm_critic_completed", details={"decision": critique.decision, "rationale": critique.rationale, "llm": critique_meta, "automatic_execution": automatic})
             if not automatic:
                 self.logger.log_action("human_review_required", details={"proposal": plan.__dict__, "reason": critique.rationale})
@@ -43,7 +44,7 @@ class BroadAutonomousLoop:
                 rationale=plan.rationale,
                 config={"loss": "pointwise", "learning_rate": 0.001, "l2": 1e-6, "embedding_dim": 16, "batch_size": 8192, "seed": 0, "epochs": 4, "agent_change": plan.controlled_change},
                 changed_factors=(plan.controlled_change,),
-                model_family=plan.model_family,
+                model_family=normalized_family,
                 research_direction_id=plan.area,
                 search_strategy="llm_broad_proposal",
                 search_region_id=f"region_{plan.area}",
@@ -54,3 +55,11 @@ class BroadAutonomousLoop:
             review, review_meta = self.team.review(self.logger.store.read_iterations())
             self.logger.log_action("llm_evidence_review_completed", details={**review, "llm": review_meta})
         return completed
+
+
+def _normalize_model_family(value: str) -> str:
+    """LLM prose such as 'unchanged baseline model family' still means FM."""
+    normalized = value.strip().lower()
+    if normalized in {"fm", "factorization machine", "unchanged baseline model family", "baseline fm", "unchanged fm"}:
+        return "fm"
+    return normalized
