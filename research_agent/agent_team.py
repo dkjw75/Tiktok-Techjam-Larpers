@@ -45,7 +45,7 @@ class LLMResearchTeam:
             "controlled_change": {"type": "string"}, "model_family": {"type": "string"},
             "requires_human_review": {"type": "boolean"}, "leakage_risks": {"type": "array", "items": {"type": "string"}},
         }}
-        prompt = json.dumps({"state": state, "recent_experiments": list(history[-8:]), "rules": "Use only the rows and fields already returned by data.py; do not request extra KuaiRand files, external datasets, raw CSV access, or validation/test labels. One main change only. Propose broadly; mark new model families/dependencies for review."}, default=str)
+        prompt = json.dumps({"state": state, "recent_experiments": list(history[-8:]), "rules": "Use only the rows and fields already returned by data.py; do not request extra KuaiRand files, external datasets, raw CSV access, or validation/test labels. One main change only. Prefer an automatically runnable change within the existing PyTorch FM before proposing a new model family/dependency, which requires review."}, default=str)
         data, meta = self.client.create_json("You are the research-planning specialist. Propose one evidence-based experiment, not numeric hyperparameters.", prompt, schema=schema)
         return BroadProposal(data["hypothesis"], data["rationale"], data["area"], data["controlled_change"], data["model_family"], bool(data["requires_human_review"]), tuple(data["leakage_risks"])), meta
 

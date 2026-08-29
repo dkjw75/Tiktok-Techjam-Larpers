@@ -28,7 +28,9 @@ class BroadAutonomousLoop:
             self.logger.log_action("llm_critic_completed", details={"decision": critique.decision, "rationale": critique.rationale, "llm": critique_meta, "automatic_execution": automatic})
             if not automatic:
                 self.logger.log_action("human_review_required", details={"proposal": plan.__dict__, "reason": critique.rationale})
-                break
+                # Preserve the review gate, but keep the autonomous search alive
+                # by asking for another proposal inside the approved scope.
+                continue
             experiment_id = f"exp_{self.controller.state.completed_iterations + 1:03d}"
             source, code_meta = self.team.code(plan)
             workspace = self.logger.store.root / "candidate_workspaces" / experiment_id
