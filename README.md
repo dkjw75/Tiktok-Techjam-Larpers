@@ -30,6 +30,8 @@ The research agent uses an OpenAI model to generate the high-level hypothesis an
 
 It selects experiments using validation only. It stops successfully at validation primary `0.65`, requests an LLM-guided new research direction after three non-improving iterations, and has a hard cap of 20 experiments.
 
+The LLM planner, critic, coding, and review roles are documented against the architecture in `docs/agent-architecture-conformance.md`.
+
 `--data_dir` 默认 `./KuaiRand-Pure/data`；数据放在别处时显式指定。
 
 `--model` 可选 `fm`（官方 baseline）/ `pop`（trivial baseline）/ `random`（下界，用于自检评测代码）。

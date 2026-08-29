@@ -22,8 +22,8 @@ class OpenAIResponsesClient:
     model: str
     endpoint: str = "https://api.openai.com/v1/responses"
 
-    def create_json(self, instructions: str, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
-        schema = {
+    def create_json(self, instructions: str, prompt: str, *, schema: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+        schema = schema or {
             "type": "object",
             "additionalProperties": False,
             "required": ["direction_id", "hypothesis", "rationale", "strategy"],

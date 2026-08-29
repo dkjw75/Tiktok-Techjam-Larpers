@@ -12,6 +12,8 @@ from .finalize import finalize_run
 from .logger import ResearchLogger
 from .loop import AutonomousResearchLoop
 from .models.torch_fm import run_torch_fm_candidate
+from .agent_team import LLMResearchTeam
+from .broad_loop import BroadAutonomousLoop
 from .llm_planner import LLMPlanningError, OpenAIPlanner
 from .regions import SearchRegionManager
 from .review import EvidenceReviewer
@@ -47,17 +49,7 @@ def main() -> None:
     except LLMPlanningError as exc:
         logger.log_action("llm_configuration_failed", details={"error": str(exc), "recovery": "add OPENAI_API_KEY to .env and rerun"})
         raise SystemExit(str(exc))
-    loop = AutonomousResearchLoop(
-        controller=controller,
-        logger=logger,
-        planner=planner,
-        search=SearchController(seed=0),
-        critic=ProposalCritic(validator),
-        reviewer=EvidenceReviewer(),
-        fidelity=FidelityManager(),
-        regions=SearchRegionManager(),
-        candidate=run_torch_fm_candidate,
-    )
+    loop = BroadAutonomousLoop(controller, logger, LLMResearchTeam(planner.client))
     try:
         results = loop.run(min(args.cycles, contract.max_experiments))
     except LLMPlanningError as exc:
