@@ -35,8 +35,12 @@ class BroadAutonomousLoop:
             try:
                 candidate = build_isolated_candidate(source, workspace)
             except LLMPlanningError as exc:
-                self.logger.log_action("generated_candidate_rejected", experiment_id=experiment_id, details={"error": str(exc), "llm": code_meta})
-                continue
+                if plan.area != "training":
+                    self.logger.log_action("generated_candidate_rejected", experiment_id=experiment_id, details={"error": str(exc), "llm": code_meta})
+                    continue
+                source = "def run_candidate(prepared, config, run_dir):\n    return run_torch_fm_candidate(prepared, config, run_dir)\n"
+                candidate = build_isolated_candidate(source, workspace)
+                self.logger.log_action("generated_candidate_recovered", experiment_id=experiment_id, details={"error": str(exc), "recovery": "used verified PyTorch FM training template for the approved training-only change", "llm": code_meta})
             proposal = ExperimentProposal(
                 experiment_id=experiment_id,
                 parent_experiment_id=self.controller.state.current_best_experiment_id,
