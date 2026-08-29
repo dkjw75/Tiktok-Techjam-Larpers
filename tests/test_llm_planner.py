@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from research_agent.llm_planner import LLMPlanningError, OpenAIPlanner
+from research_agent.llm_planner import LLMPlanningError, OpenAIPlanner, _extract_output_text
 from research_agent.state import ResearchState
 
 
@@ -20,6 +20,10 @@ class FakeClient:
 
 
 class LLMPlannerTests(unittest.TestCase):
+    def test_structured_responses_output_is_extracted(self):
+        raw = {"output": [{"content": [{"type": "output_text", "text": '{"result":"ok"}'}]}]}
+        self.assertEqual(_extract_output_text(raw), '{"result":"ok"}')
+
     def test_llm_response_supplies_the_hypothesis_and_is_logged_as_metadata(self):
         planner = OpenAIPlanner(FakeClient())
         direction = planner.propose([], ResearchState())

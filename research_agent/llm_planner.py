@@ -51,13 +51,22 @@ class OpenAIResponsesClient:
                 raw = json.loads(response.read().decode("utf-8"))
         except (HTTPError, URLError, TimeoutError) as exc:
             raise LLMPlanningError(f"OpenAI planning request failed: {exc}") from exc
-        text = raw.get("output_text")
+        text = raw.get("output_text") or _extract_output_text(raw)
         if not isinstance(text, str):
             raise LLMPlanningError("OpenAI response did not include output_text")
         try:
             return json.loads(text), {"model": self.model, "usage": raw.get("usage", {}), "response_id": raw.get("id")}
         except json.JSONDecodeError as exc:
             raise LLMPlanningError("OpenAI response was not valid structured JSON") from exc
+
+
+def _extract_output_text(raw: Mapping[str, Any]) -> str | None:
+    """Support Responses payloads that return structured output content."""
+    for item in raw.get("output", []):
+        for content in item.get("content", []):
+            if content.get("type") == "output_text" and isinstance(content.get("text"), str):
+                return content["text"]
+    return None
 
 
 class OpenAIPlanner:
