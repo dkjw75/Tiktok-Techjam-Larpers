@@ -62,4 +62,6 @@ def _normalize_model_family(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {"fm", "factorization machine", "unchanged baseline model family", "baseline fm", "unchanged fm"}:
         return "fm"
+    if "baseline model family" in normalized or "factorization machine" in normalized:
+        return "fm"
     return normalized
