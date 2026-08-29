@@ -55,7 +55,7 @@ def main() -> None:
     except LLMPlanningError as exc:
         logger.log_action("llm_planning_failed", details={"error": str(exc), "recovery": "run paused; correct the LLM configuration and resume"})
         raise SystemExit(str(exc))
-    logger.log_action("research_run_finished", details={"cycles_completed": len(results), "stop_reason": controller.state.stop_reason})
+    logger.log_action("research_run_finished", details={"cycles_completed": results, "stop_reason": controller.state.stop_reason})
     try:
         final = finalize_run(store, contract=contract)
     except Exception as exc:
