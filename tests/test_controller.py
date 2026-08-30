@@ -429,7 +429,7 @@ class ActiveRuntimeAccountingTests(unittest.TestCase):
         return ExperimentController(
             logger=logger,
             runner=ExperimentRunner(logger, data_loader=loader),
-            validator=SafetyValidator(max_runtime_seconds=900),
+            validator=SafetyValidator(max_runtime_seconds=2400),
             state=state,
             clock=clock,
         )

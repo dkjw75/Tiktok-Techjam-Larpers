@@ -178,8 +178,10 @@ def _validate_weights(weights: np.ndarray, member_count: int) -> None:
         raise ValueError("ensemble checkpoint weights must use float64")
     if weights.ndim != 1 or len(weights) != member_count:
         raise ValueError("ensemble checkpoint weights must be one-dimensional and aligned")
-    if not np.isfinite(weights).all() or (weights <= 0.0).any():
-        raise ValueError("active ensemble weights must be positive and finite")
+    if not np.isfinite(weights).all() or (weights < 0.0).any():
+        raise ValueError("ensemble weights must be non-negative and finite")
+    if not (weights > 0.0).any():
+        raise ValueError("at least one ensemble weight must be positive")
     if not np.isclose(float(weights.sum()), 1.0, rtol=0.0, atol=1e-12):
         raise ValueError("active ensemble weights must sum to one")
 

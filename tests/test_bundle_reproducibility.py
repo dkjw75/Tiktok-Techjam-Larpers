@@ -136,5 +136,54 @@ class LineagePropagationTests(unittest.TestCase):
         self.assertIsNone(prepared.prediction_rows)
 
 
+
+class ZeroWeightMemberTests(unittest.TestCase):
+    """A bundle must carry every trained member, including zero-weight ones.
+
+    Regression guard: pruning zero-weight members and renormalizing the rest was
+    measurably NOT neutral -- it moved the replayed validation primary by 1.7e-4,
+    so the bundle could not reproduce the score it certified.
+    """
+
+    def test_zero_weight_member_is_persisted_not_pruned(self):
+        train, valid, _predict = synthetic()
+        config = {
+            "seed": 0,
+            "epochs": 3,
+            "patience": 2,
+            "members": ["fm", "watch", "item"],
+            "blend_weights": [0.5, 0.5, 0.0],   # third member carries no weight
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output = run_ensemble_fm_candidate(
+                PreparedData(train, valid), config, Path(tmp)
+            )
+            manifest = load_ensemble_checkpoint(
+                Path(output.metadata["checkpoint_path"])
+            ).manifest
+        self.assertEqual(len(manifest["active_members"]), 3)
+        self.assertIn("item", manifest["active_members"])
+
+    def test_bundle_with_a_zero_weight_member_still_replays_exactly(self):
+        train, valid, _predict = synthetic()
+        config = {
+            "seed": 0,
+            "epochs": 3,
+            "patience": 2,
+            "members": ["fm", "watch", "item"],
+            "blend_weights": [0.5, 0.5, 0.0],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output = run_ensemble_fm_candidate(
+                PreparedData(train, valid), config, Path(tmp)
+            )
+            bundle = Path(output.metadata["checkpoint_path"])
+            replay = predict_ensemble_checkpoint(PreparedData((), valid), bundle)
+            self.assertEqual(
+                score_hash(replay.scores),
+                output.metadata["validation_score_sha256"],
+                "a zero-weight member must not break exact replay",
+            )
+
 if __name__ == "__main__":
     unittest.main()

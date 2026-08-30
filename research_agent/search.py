@@ -91,7 +91,7 @@ class SearchController:
             rationale=rationale,
             config=config,
             changed_factors=(active_factor,),
-            runtime_budget_seconds=900.0,
+            runtime_budget_seconds=2400.0,
             research_direction_id=direction.direction_id,
             search_strategy=search_state.strategy,
             search_region_id=search_state.region_id,

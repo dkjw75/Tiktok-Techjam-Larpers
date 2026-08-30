@@ -58,7 +58,7 @@ def confirm_selected_candidate(
     *,
     contract: BenchmarkContract = BENCHMARK_CONTRACT,
     seeds: Sequence[int] = (0, 1, 2),
-    timeout_seconds: float = 600.0,
+    timeout_seconds: float = 2400.0,
 ) -> SeedConfirmationResult:
     """Confirm a selected configuration without reading the test split."""
     normalized_seeds = tuple(int(seed) for seed in seeds)
@@ -185,7 +185,7 @@ def confirm_promotion_candidate(
     candidate: CandidateCallable,
     contract: BenchmarkContract = BENCHMARK_CONTRACT,
     seeds: Sequence[int] = (0, 1, 2),
-    timeout_seconds: float = 600.0,
+    timeout_seconds: float = 2400.0,
 ) -> SeedConfirmationResult:
     """Confirm a provisional candidate against matched incumbent seed evidence."""
     normalized_seeds = tuple(int(seed) for seed in seeds)

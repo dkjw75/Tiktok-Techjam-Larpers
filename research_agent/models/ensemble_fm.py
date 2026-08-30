@@ -640,13 +640,15 @@ def run_ensemble_fm_candidate(
         if all(item.stopped_by == "early_stopping" for item in results)
         else "max_epochs_truncated"
     )
+    # Persist EVERY trained member with its exact weight. Pruning zero-weight
+    # members and renormalizing was measurably not neutral: it changed the
+    # replayed validation primary by 1.7e-4, so a pruned bundle could not
+    # reproduce the score it certified. Exact reproduction outweighs bundle size.
     active = [
         (name, item, float(weight))
         for name, item, weight in zip(names, results, best_weights)
-        if float(weight) > 0.0
     ]
-    active_weight_total = sum(weight for _name, _item, weight in active)
-    active_weights = [weight / active_weight_total for _name, _item, weight in active]
+    active_weights = [float(weight) for _name, _item, weight in active]
     checkpoint_members = []
     for name, item, _weight in active:
         encoder_manifest, encoder_arrays = _encoder_checkpoint_parts(item.encoder)

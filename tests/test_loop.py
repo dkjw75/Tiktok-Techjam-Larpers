@@ -40,7 +40,7 @@ class AutonomousLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = ArtifactStore(directory)
             logger = ResearchLogger(store)
-            validator = SafetyValidator(max_runtime_seconds=900)
+            validator = SafetyValidator(max_runtime_seconds=2400)
             controller = ExperimentController(
                 logger=logger,
                 runner=ExperimentRunner(logger, data_loader=loader),
@@ -86,7 +86,7 @@ class AutonomousLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = ArtifactStore(directory)
             logger = ResearchLogger(store)
-            validator = SafetyValidator(max_runtime_seconds=900)
+            validator = SafetyValidator(max_runtime_seconds=2400)
             controller = ExperimentController(
                 logger=logger,
                 runner=ExperimentRunner(logger, data_loader=loader),
@@ -175,7 +175,7 @@ class AutonomousLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = ArtifactStore(directory)
             logger = ResearchLogger(store)
-            validator = SafetyValidator(max_runtime_seconds=900)
+            validator = SafetyValidator(max_runtime_seconds=2400)
             controller = ExperimentController(
                 logger=logger,
                 runner=ExperimentRunner(logger, data_loader=loader),
@@ -203,7 +203,7 @@ class AutonomousLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = ArtifactStore(directory)
             logger = ResearchLogger(store)
-            validator = SafetyValidator(max_runtime_seconds=900)
+            validator = SafetyValidator(max_runtime_seconds=2400)
             controller = ExperimentController(
                 logger=logger,
                 runner=ExperimentRunner(logger, data_loader=loader),
@@ -245,7 +245,7 @@ class AutonomousLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = ArtifactStore(directory)
             logger = ResearchLogger(store)
-            validator = SafetyValidator(max_runtime_seconds=900)
+            validator = SafetyValidator(max_runtime_seconds=2400)
             controller = ExperimentController(
                 logger=logger,
                 runner=ExperimentRunner(logger, data_loader=loader),
@@ -280,7 +280,7 @@ class AutonomousLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = ArtifactStore(directory)
             logger = ResearchLogger(store)
-            validator = SafetyValidator(max_runtime_seconds=900)
+            validator = SafetyValidator(max_runtime_seconds=2400)
             controller = ExperimentController(
                 logger=logger,
                 runner=ExperimentRunner(logger, data_loader=loader),

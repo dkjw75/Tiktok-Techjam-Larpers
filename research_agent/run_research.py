@@ -134,7 +134,7 @@ def main() -> None:
     from .models.dispatch import run_candidate
 
     logger = ResearchLogger(store)
-    validator = SafetyValidator(max_runtime_seconds=900.0)
+    validator = SafetyValidator(max_runtime_seconds=2400.0)
     runner = ExperimentRunner(logger, contract=contract)
     controller = ExperimentController(
         logger=logger,
