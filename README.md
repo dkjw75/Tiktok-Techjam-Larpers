@@ -25,10 +25,28 @@ python3 baseline.py --model fm
 The research agent uses an OpenAI model to generate the high-level hypothesis and rationale. Copy `.env.example` to `.env` if needed, add `OPENAI_API_KEY`, then run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m research_agent.run_research --artifact-dir runs_llm
+.\.venv\Scripts\python.exe -m research_agent.run_research run --cycles 50 --artifact-dir runs_llm
 ```
 
-It selects experiments using validation only. It stops successfully at validation primary `0.65`, requests an LLM-guided new research direction after three non-improving iterations, and has a hard cap of 20 experiments.
+Resume and inspect a durable run with:
+
+```powershell
+.\.venv\Scripts\python.exe -m research_agent.run_research resume --cycles 10 --artifact-dir runs_llm
+.\.venv\Scripts\python.exe -m research_agent.run_research status --artifact-dir runs_llm
+```
+
+The agent selects with validation only. There is no score target. A full candidate must improve by strictly more than `0.002`, use the organizer 40-epoch/patience-4 budget, stop through early stopping rather than an epoch cap, match the incumbent data/evaluator/preprocessing/feature/seed lineage, and survive seeds 0, 1, and 2 before becoming champion. Research stops after three valid non-improvements, 50 logical trials, or six hours. Screen trials cannot become champion.
+
+Worker processes receive a staged train/validation-only artifact rather than the raw dataset path. Run attempts, retries, configuration lineage, metrics, LLM usage, seed certificates and state transitions are persisted under the artifact directory.
+
+Test access is a separate, explicit, idempotent transaction:
+
+```powershell
+.\.venv\Scripts\python.exe -m research_agent.run_research confirm-seeds --artifact-dir runs_llm
+.\.venv\Scripts\python.exe -m research_agent.run_research finalize --artifact-dir runs_llm --confirm-final-evaluation
+```
+
+Repeated finalization with the same immutable inputs reuses the completed certificate and does not evaluate test again.
 
 `--data_dir` 默认 `./KuaiRand-Pure/data`；数据放在别处时显式指定。
 

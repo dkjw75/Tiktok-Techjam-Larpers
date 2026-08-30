@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 from typing import Any, Mapping
 
 from .planner import ResearchDirection
@@ -12,8 +13,13 @@ class FidelityManager:
     """Promotes only candidates with recorded validation evidence."""
 
     def should_promote(self, metrics: Mapping[str, Any], incumbent_primary: float) -> bool:
+        """Return whether a screen is rankable, never whether it beats the full champion."""
         primary = metrics.get("primary")
-        return isinstance(primary, (int, float)) and primary >= incumbent_primary - 0.002
+        return (
+            not isinstance(primary, bool)
+            and isinstance(primary, (int, float))
+            and math.isfinite(float(primary))
+        )
 
     def promote(
         self,
@@ -24,6 +30,7 @@ class FidelityManager:
     ) -> ExperimentProposal:
         config = dict(proposal.config)
         config["epochs"] = int(direction.evaluation_budget["full_epochs"])
+        config["patience"] = int(direction.evaluation_budget.get("full_patience", 4))
         config["fidelity"] = "full"
         return replace(
             proposal,

@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .planner import ResearchDirection
+from .planner import ResearchDirection, ResearchPlanner
 from .state import ResearchState
 
 
@@ -21,6 +22,9 @@ class OpenAIResponsesClient:
     api_key: str
     model: str
     endpoint: str = "https://api.openai.com/v1/responses"
+    max_attempts: int = 3
+    backoff_seconds: float = 1.0
+    sleep: Callable[[float], None] = time.sleep
 
     def create_json(self, instructions: str, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
         schema = {
@@ -46,18 +50,72 @@ class OpenAIResponsesClient:
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             method="POST",
         )
+        if self.max_attempts <= 0:
+            raise ValueError("max_attempts must be positive")
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                with urlopen(request, timeout=60) as response:
+                    raw = json.loads(response.read().decode("utf-8"))
+                break
+            except HTTPError as exc:
+                retryable = exc.code == 429 or 500 <= exc.code < 600
+                if not retryable or attempt == self.max_attempts:
+                    raise LLMPlanningError(
+                        f"OpenAI planning request failed after {attempt} attempt(s): HTTP {exc.code}"
+                    ) from exc
+            except (URLError, TimeoutError) as exc:
+                if attempt == self.max_attempts:
+                    raise LLMPlanningError(
+                        f"OpenAI planning request failed after {attempt} attempt(s): {exc}"
+                    ) from exc
+            self.sleep(self.backoff_seconds * (2 ** (attempt - 1)))
+
+        if raw.get("status") == "incomplete":
+            details = raw.get("incomplete_details") or {}
+            raise LLMPlanningError(f"OpenAI response was incomplete: {details}")
+        if raw.get("status") in {"failed", "cancelled"}:
+            raise LLMPlanningError(f"OpenAI response ended with status {raw.get('status')}")
+        text = _extract_output_text(raw)
         try:
-            with urlopen(request, timeout=60) as response:
-                raw = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError) as exc:
-            raise LLMPlanningError(f"OpenAI planning request failed: {exc}") from exc
-        text = raw.get("output_text")
-        if not isinstance(text, str):
-            raise LLMPlanningError("OpenAI response did not include output_text")
-        try:
-            return json.loads(text), {"model": self.model, "usage": raw.get("usage", {}), "response_id": raw.get("id")}
+            return json.loads(text), {
+                "model": self.model,
+                "usage": raw.get("usage", {}),
+                "response_id": raw.get("id"),
+                "status": raw.get("status"),
+            }
         except json.JSONDecodeError as exc:
             raise LLMPlanningError("OpenAI response was not valid structured JSON") from exc
+
+
+def _extract_output_text(raw: Mapping[str, Any]) -> str:
+    """Extract structured text from the wire-format Responses API payload."""
+    output_text = raw.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+
+    refusal: str | None = None
+    text_parts: list[str] = []
+    output = raw.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, Mapping):
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, Mapping):
+                    continue
+                part_type = part.get("type")
+                if part_type == "refusal" and isinstance(part.get("refusal"), str):
+                    refusal = part["refusal"]
+                if part_type == "output_text" and isinstance(part.get("text"), str):
+                    text_parts.append(part["text"])
+    if refusal:
+        raise LLMPlanningError(f"OpenAI planning request was refused: {refusal}")
+    if text_parts:
+        return "".join(text_parts)
+    raise LLMPlanningError("OpenAI response did not include structured output text")
 
 
 class OpenAIPlanner:
@@ -78,13 +136,19 @@ class OpenAIPlanner:
 
     def propose(self, history: Sequence[Mapping[str, Any]], state: ResearchState) -> ResearchDirection:
         response, metadata = self.client.create_json(_instructions(), _prompt(history, state))
+        if not isinstance(response, Mapping):
+            raise LLMPlanningError("LLM structured response must be an object")
         direction_id = response.get("direction_id")
+        if not isinstance(direction_id, str):
+            raise LLMPlanningError("LLM direction_id must be a string")
         template = _APPROVED_DIRECTIONS.get(direction_id)
         if template is None:
             raise LLMPlanningError("LLM proposed an unsupported direction")
         hypothesis = str(response.get("hypothesis", "")).strip()
         rationale = str(response.get("rationale", "")).strip()
         strategy = str(response.get("strategy", "")).strip()
+        if strategy not in {"exploration", "local_refinement", "diverse_restart"}:
+            raise LLMPlanningError("LLM proposed an unsupported search strategy")
         if len(hypothesis) < 20 or len(rationale) < 20:
             raise LLMPlanningError("LLM proposal lacks a sufficiently specific hypothesis or rationale")
         self.last_metadata = {**metadata, "raw_proposal": response}
@@ -94,14 +158,54 @@ class OpenAIPlanner:
             rationale=rationale,
             search_space=template["search_space"],
             success_evidence="Validation primary improves by more than 0.002 over the accepted parent.",
-            evaluation_budget={"low_epochs": 4, "full_epochs": 12},
+            evaluation_budget={
+                "low_epochs": 4,
+                "low_patience": 2,
+                "full_epochs": 40,
+                "full_patience": 4,
+            },
             strategy=strategy,
         )
 
 
+class ResilientPlanner:
+    """Use a logged deterministic planner only after an operational LLM failure."""
+
+    def __init__(self, primary: ResearchPlanner, fallback: ResearchPlanner) -> None:
+        self.primary = primary
+        self.fallback = fallback
+        self.last_metadata: dict[str, Any] = {}
+
+    def propose(
+        self,
+        history: Sequence[Mapping[str, Any]],
+        state: ResearchState,
+    ) -> ResearchDirection:
+        try:
+            direction = self.primary.propose(history, state)
+        except LLMPlanningError as exc:
+            direction = self.fallback.propose(history, state)
+            self.last_metadata = {
+                "planner_mode": "deterministic_fallback",
+                "degraded": True,
+                "error": str(exc),
+            }
+            return direction
+        self.last_metadata = {
+            **dict(getattr(self.primary, "last_metadata", {})),
+            "planner_mode": "llm",
+            "degraded": False,
+        }
+        return direction
+
+
 _APPROVED_DIRECTIONS: Mapping[str, Mapping[str, Any]] = {
-    "pointwise_fm_optimization": {"search_space": {"loss": ["pointwise"], "learning_rate": [0.0005, 0.001, 0.002], "l2": [0.0, 1e-6, 1e-5]}},
-    "pairwise_fm_ranking": {"search_space": {"loss": ["pairwise"], "learning_rate": [0.0005, 0.001], "l2": [0.0, 1e-6]}},
+    "listwise_fm_ranking": {
+        "search_space": {
+            "loss": ["listwise"],
+            "objective_variant": ["t1", "t05", "t1_bce25"],
+        }
+    },
 }
 
 

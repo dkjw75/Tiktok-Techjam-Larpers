@@ -84,21 +84,37 @@ class EvidencePlanner:
         # Exact values are selected later by SearchController.
         return (
             ResearchDirection(
-                direction_id="pointwise_fm_optimization",
-                hypothesis="The current FM training settings may leave ranking quality unrealized.",
-                rationale="Optimize the existing PyTorch FM without changing its feature set or model family.",
-                search_space={"loss": ["pointwise"], "learning_rate": [0.0005, 0.001, 0.002], "l2": [0.0, 1e-6, 1e-5]},
-                success_evidence="Validation primary improves by more than 0.002 over the accepted parent.",
-                evaluation_budget={"low_epochs": 4, "full_epochs": 12},
-                strategy="bootstrap",
+                direction_id="rank_ensemble",
+                hypothesis="Blending within-user ranks across FM members that differ in feature set and training objective may beat any single member, because their errors are decorrelated even when some members are individually weaker than the baseline.",
+                rationale="Single-model directions are exhausted: every loss change lost to the baseline and every wide feature set lost to the 5-field baseline. Ensembling is the only untested direction whose gain does not require a better individual model.",
+                search_space={
+                    "loss": ["ensemble"],
+                    "member_set": ["core4", "core5", "core6", "core7k8", "core7k32", "core8"],
+                },
+                success_evidence="Full-fidelity three-seed mean validation primary improves by more than 0.002, targeting at least 0.003, with at least two seed wins.",
+                evaluation_budget={
+                    "low_epochs": 4,
+                    "low_patience": 2,
+                    "full_epochs": 40,
+                    "full_patience": 4,
+                },
+                strategy="exploitation",
             ),
             ResearchDirection(
-                direction_id="pairwise_fm_ranking",
-                hypothesis="A pairwise within-user ranking objective may align FM training with GAUC and nDCG@5.",
-                rationale="The benchmark is a within-user ranking task while the reference model uses pointwise loss.",
-                search_space={"loss": ["pairwise"], "learning_rate": [0.0005, 0.001], "l2": [0.0, 1e-6]},
-                success_evidence="Validation primary improves while both GAUC and nDCG@5 remain valid.",
-                evaluation_budget={"low_epochs": 4, "full_epochs": 12},
+                direction_id="listwise_fm_ranking",
+                hypothesis="A per-user full-slate softmax objective may align FM training with GAUC and nDCG@5 better than pointwise or sampled-pair training.",
+                rationale="The first pairwise direction underperformed, so test the organizer-identified untried listwise objective before any more FM tuning.",
+                search_space={
+                    "loss": ["listwise"],
+                    "objective_variant": ["t1", "t05", "t1_bce25"],
+                },
+                success_evidence="Full-fidelity three-seed mean validation primary improves by more than 0.002, targeting at least 0.003.",
+                evaluation_budget={
+                    "low_epochs": 4,
+                    "low_patience": 2,
+                    "full_epochs": 40,
+                    "full_patience": 4,
+                },
                 strategy="bootstrap",
             ),
         )

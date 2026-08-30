@@ -1,9 +1,7 @@
 import csv
-import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from pathlib import Path
 
 from research_agent.logger import ResearchLogger
 from research_agent.reporter import MarkdownReporter

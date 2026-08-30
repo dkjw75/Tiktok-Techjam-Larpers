@@ -1,3 +1,12 @@
+# Historical Implementation Phases
+
+This file records the original phased plan. The implementation has now advanced
+beyond it; the authoritative operating instructions are `README.md`,
+`research_agent/README.md`, the organizer evaluator, and persisted run evidence.
+In particular, champion promotion now requires matched three-seed confirmation,
+and the competition stopping limit is 50 logical trials rather than the early
+single-run controller described below.
+
 Yes. We’ll implement it incrementally, with each phase producing something testable before moving on.
 
 The eventual operating loop will be:

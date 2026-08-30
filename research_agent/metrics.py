@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
+from numpy.typing import NDArray
 
 from evaluate import evaluate
 
@@ -83,7 +84,7 @@ def evaluate_predictions(
 def _one_dimensional(name: str, values: Sequence[Any], *, dtype: type) -> np.ndarray:
     if hasattr(values, "detach"):
         values = values.detach().cpu().numpy()
-    array = np.asarray(values, dtype=dtype)
+    array: NDArray[Any] = np.asarray(values, dtype=dtype)
     if array.ndim != 1:
         raise MetricsValidationError(f"{name} must be one-dimensional")
     return array
@@ -91,4 +92,5 @@ def _one_dimensional(name: str, values: Sequence[Any], *, dtype: type) -> np.nda
 
 def _evaluator_sha256() -> str:
     evaluator_path = Path(__file__).resolve().parent.parent / "evaluate.py"
-    return hashlib.sha256(evaluator_path.read_bytes()).hexdigest()
+    content = evaluator_path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(content).hexdigest()

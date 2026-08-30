@@ -13,8 +13,11 @@ class FidelityTests(unittest.TestCase):
         manager = FidelityManager()
 
         self.assertTrue(manager.should_promote({"primary": 0.6}, 0.6015))
-        self.assertFalse(manager.should_promote({"primary": 0.5}, 0.6015))
+        self.assertTrue(manager.should_promote({"primary": 0.1}, 0.6015))
+        self.assertFalse(manager.should_promote({"primary": float("nan")}, 0.6015))
         promoted = manager.promote(proposal, direction, experiment_id="exp_002")
         self.assertEqual(promoted.config["fidelity"], "full")
         self.assertEqual(promoted.config["epochs"], direction.evaluation_budget["full_epochs"])
+        self.assertEqual(promoted.config["epochs"], 40)
+        self.assertEqual(promoted.config["patience"], 4)
         self.assertEqual(promoted.changed_factors, proposal.changed_factors)

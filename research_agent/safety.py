@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from .contracts import BENCHMARK_CONTRACT, BenchmarkContract
@@ -18,6 +18,7 @@ class ExperimentProposal:
     config: Mapping[str, Any]
     changed_factors: tuple[str, ...]
     parent_experiment_id: str | None = None
+    comparison_incumbent_id: str | None = None
     training_split: str = "train"
     selection_split: str = "valid"
     external_data_sources: tuple[str, ...] = ()
