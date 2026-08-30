@@ -18,6 +18,10 @@ class ResearchState:
     consecutive_non_improvements: int = 0
     plateau_restarts: int = 0
     started_at_epoch_seconds: float | None = None
+    # Research runtime ACTUALLY spent computing, carried across invocations.
+    # Wall-clock since first start would also count hours the agent was paused,
+    # which must not be spendable as if it were research effort.
+    active_runtime_seconds: float = 0.0
     elapsed_seconds: float = 0.0
     stop_reason_code: str | None = None
     stop_reason: str | None = None

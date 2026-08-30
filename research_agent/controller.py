@@ -95,6 +95,9 @@ class ExperimentController:
         self.clock = clock
         if self.state.started_at_epoch_seconds is None:
             self.state.started_at_epoch_seconds = self.clock()
+        # Anchor for THIS invocation; paused time between invocations is never
+        # added to the research budget.
+        self._invocation_started_at = self.clock()
         self._historical_configs = [
             record["config"]
             for record in iteration_records
@@ -685,9 +688,11 @@ class ExperimentController:
         )
 
     def _apply_stop_rule(self) -> None:
-        started = self.state.started_at_epoch_seconds
-        if started is not None:
-            self.state.elapsed_seconds = max(0.0, self.clock() - started)
+        anchor = getattr(self, "_invocation_started_at", None)
+        if anchor is not None:
+            self.state.elapsed_seconds = self.state.active_runtime_seconds + max(
+                0.0, self.clock() - anchor
+            )
         if self.state.stop_reason is not None:
             return
         if self.state.consecutive_non_improvements >= self.contract.non_improvement_limit:
@@ -718,6 +723,17 @@ class ExperimentController:
             rel_tol=1e-12,
             abs_tol=1e-12,
         )
+
+    def checkpoint_active_runtime(self) -> None:
+        """Fold this invocation's elapsed time into the carried-forward total."""
+        anchor = getattr(self, "_invocation_started_at", None)
+        if anchor is None:
+            return
+        now = self.clock()
+        self.state.active_runtime_seconds += max(0.0, now - anchor)
+        self._invocation_started_at = now
+        self.state.elapsed_seconds = self.state.active_runtime_seconds
+        self._persist_state()
 
     def _persist_state(self) -> None:
         self.logger.store.write_root_json("state.json", self.state.as_dict())

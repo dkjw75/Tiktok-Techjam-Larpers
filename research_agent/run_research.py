@@ -184,7 +184,10 @@ def main() -> None:
     except LLMPlanningError as exc:
         logger.log_action("llm_planning_failed", details={"error": str(exc), "recovery": "run paused; correct the LLM configuration and resume"})
         raise SystemExit(str(exc))
-    logger.log_action("research_run_finished", details={"cycles_completed": len(results), "stop_reason": controller.state.stop_reason})
+    # Fold this invocation's real compute into the carried-forward total before
+    # persisting, so a paused run does not silently burn its research budget.
+    controller.checkpoint_active_runtime()
+    logger.log_action("research_run_finished", details={"cycles_completed": len(results), "stop_reason": controller.state.stop_reason, "active_runtime_seconds": controller.state.active_runtime_seconds})
     print(json.dumps(controller.state.as_dict(), indent=2, sort_keys=True))
     if controller.state.stopped:
         print("Research reached a terminal state without test access. Confirm seeds before finalization.")

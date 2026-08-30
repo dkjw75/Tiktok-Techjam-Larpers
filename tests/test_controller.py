@@ -419,3 +419,48 @@ class ControllerTests(unittest.TestCase):
 
         self.assertEqual(controller.state.completed_iterations, 2)
         self.assertEqual(controller.state.current_best_experiment_id, "exp_002")
+
+
+class ActiveRuntimeAccountingTests(unittest.TestCase):
+    """Paused time must not be spendable as if it were research effort."""
+
+    def _controller(self, store, clock, state=None):
+        logger = ResearchLogger(store)
+        return ExperimentController(
+            logger=logger,
+            runner=ExperimentRunner(logger, data_loader=loader),
+            validator=SafetyValidator(max_runtime_seconds=900),
+            state=state,
+            clock=clock,
+        )
+
+    def test_paused_time_between_invocations_is_not_charged(self):
+        now = [1000.0]
+        with tempfile.TemporaryDirectory() as directory:
+            store = ArtifactStore(directory)
+            first = self._controller(store, lambda: now[0])
+            now[0] += 60.0                      # 60s of actual research
+            first.checkpoint_active_runtime()
+            carried = first.state.active_runtime_seconds
+            self.assertAlmostEqual(carried, 60.0, places=6)
+
+            now[0] += 10_000.0                  # ten thousand seconds paused
+            second = self._controller(store, lambda: now[0], state=first.state)
+            second._apply_stop_rule()
+            # Only the 60 seconds of real work count.
+            self.assertAlmostEqual(second.state.elapsed_seconds, 60.0, places=6)
+
+    def test_active_runtime_accumulates_across_invocations(self):
+        now = [500.0]
+        with tempfile.TemporaryDirectory() as directory:
+            store = ArtifactStore(directory)
+            first = self._controller(store, lambda: now[0])
+            now[0] += 30.0
+            first.checkpoint_active_runtime()
+            now[0] += 5_000.0                   # paused
+            second = self._controller(store, lambda: now[0], state=first.state)
+            now[0] += 45.0                      # more real research
+            second.checkpoint_active_runtime()
+            self.assertAlmostEqual(
+                second.state.active_runtime_seconds, 75.0, places=6
+            )
