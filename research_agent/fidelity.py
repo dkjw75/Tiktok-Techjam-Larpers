@@ -34,7 +34,7 @@ class FidelityManager:
             for item in history
             if (global_pool or item.get("direction_id") == proposal.research_direction_id)
             and item.get("config", {}).get("fidelity") == "low"
-            and (not global_pool or item.get("search_strategy") == "llm_self_extending_capability")
+            and (not global_pool or item.get("search_strategy") == "llm_isolated_candidate")
             and isinstance(item.get("metrics", {}).get("primary"), (int, float))
         ]
         if not any(item.get("experiment_id") == proposal.experiment_id for item in history):
@@ -55,6 +55,9 @@ class FidelityManager:
         config["epochs"] = int(direction.evaluation_budget["full_epochs"])
         config["patience"] = int(direction.evaluation_budget.get("patience", 4))
         config["fidelity"] = "full"
+        # Full validation is a fixed three-seed confirmation ensemble; screening
+        # remains single-seed to protect compute.
+        config["confirmation_seeds"] = (0, 1, 2)
         if isinstance(config.get("_locked_settings"), Mapping):
             config["_locked_settings"] = {
                 **config["_locked_settings"],

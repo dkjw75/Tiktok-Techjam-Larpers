@@ -93,25 +93,25 @@ class LoggingTests(unittest.TestCase):
             "leakage_risks": ["Use training labels only."],
         }
         self.logger.log_action("llm_broad_hypothesis_proposed", details=details)
-        self.logger.log_action("capability_not_registered", details={"reason": "The source does not implement the loss."})
+        self.logger.log_action("isolated_candidate_rejected", details={"reason": "The source does not implement the loss."})
         self.logger.log_action("llm_broad_hypothesis_proposed", details=details)
 
         report = MarkdownReporter(self.store).write().read_text(encoding="utf-8")
 
         self.assertIn("### Proposal 1", report)
         self.assertIn("### Proposal 2", report)
-        self.assertIn("Capability not registered: The source does not implement the loss.", report)
+        self.assertIn("Candidate rejected before training: The source does not implement the loss.", report)
 
-    def test_report_includes_capability_integration_result(self):
+    def test_report_includes_isolated_candidate_preflight_result(self):
         self.logger.log_action("llm_broad_hypothesis_proposed", details={
             "hypothesis": "A custom loss may help.", "rationale": "It changes one training factor.",
             "controlled_change": "Use a custom loss.", "area": "training", "model_family": "fm", "leakage_risks": [],
         })
-        self.logger.log_action("capability_integration_check_passed", details={"config": {"loss": "custom"}})
+        self.logger.log_action("isolated_candidate_preflight_completed", details={"config": {"loss": "custom"}})
 
         report = MarkdownReporter(self.store).write().read_text(encoding="utf-8")
 
-        self.assertIn("Real integration check passed", report)
+        self.assertIn("Real-data candidate preflight passed", report)
 
     def test_report_renders_llm_selected_research_tool_as_a_proposal(self):
         self.logger.log_action(

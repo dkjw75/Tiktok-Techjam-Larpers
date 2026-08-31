@@ -166,7 +166,7 @@ class ExperimentController:
                 details={"delta_from_full_incumbent": delta},
             )
             self.state.screening_runs_completed += 1
-        elif delta > self.contract.improvement_threshold:
+        elif delta > self.contract.acceptance_threshold:
             decision = "accepted"
             self.state.current_best_experiment_id = proposal.experiment_id
             self.state.current_best_primary = float(metrics[self.contract.primary_metric])

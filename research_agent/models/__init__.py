@@ -1,4 +1,4 @@
-"""PyTorch candidate-model implementations."""
+"""Trusted PyTorch parity implementation."""
 
 from .torch_fm import TorchFM, run_torch_fm_candidate
 

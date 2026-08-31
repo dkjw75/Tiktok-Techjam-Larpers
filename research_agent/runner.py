@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from data import load
+import numpy as np
+
+from data import FIELDS, encode, load
 
 from .contracts import BENCHMARK_CONTRACT, BenchmarkContract
 from .logger import ResearchLogger
@@ -14,10 +16,18 @@ from .logger import ResearchLogger
 
 @dataclass(frozen=True)
 class PreparedData:
-    """Prepared data exposed to a candidate; test rows are intentionally absent."""
+    """Canonical data.py output exposed to a candidate; test is absent."""
 
     train_rows: Sequence[Any]
     validation_rows: Sequence[Any]
+    train_features: Any
+    validation_features: Any
+    train_labels: Sequence[Any]
+    validation_labels: Sequence[Any]
+    train_user_ids: Sequence[Any]
+    validation_user_ids: Sequence[Any]
+    feature_dim: int
+    field_names: Sequence[str]
 
 
 @dataclass(frozen=True)
@@ -99,7 +109,20 @@ class ExperimentRunner:
                 },
             )
             self.logger.log_action("training_started", experiment_id=experiment_id)
-            output = candidate(prepared, config, run_dir)
+            seeds = tuple(int(seed) for seed in config.get("confirmation_seeds", (config.get("seed", 0),)))
+            outputs = []
+            for seed in seeds:
+                output = candidate(prepared, {**config, "seed": seed}, run_dir)
+                if not isinstance(output, CandidateOutput):
+                    raise TypeError("candidate must return CandidateOutput")
+                if not (len(output.user_ids) == len(output.labels) == len(output.scores) == len(prepared.validation_rows)):
+                    raise ValueError("candidate output must align exactly to validation rows")
+                outputs.append(output)
+            output = outputs[0]
+            if len(outputs) > 1:
+                if any(list(item.user_ids) != list(output.user_ids) or list(item.labels) != list(output.labels) for item in outputs[1:]):
+                    raise ValueError("confirmation seeds returned inconsistent validation alignment")
+                output = CandidateOutput(output.user_ids, output.labels, np.mean(np.asarray([item.scores for item in outputs], dtype=np.float64), axis=0), {**output.metadata, "confirmation_seeds": list(seeds), "prediction_ensemble": "mean"})
             runtime_seconds = self.clock() - started
             if timeout_seconds is not None and runtime_seconds > timeout_seconds:
                 message = f"runtime {runtime_seconds:.3f}s exceeded budget {timeout_seconds:.3f}s"
@@ -125,10 +148,18 @@ class ExperimentRunner:
     def _load_prepared_data(self) -> PreparedData:
         splits = self.data_loader(str(self.contract.data_dir))
         try:
-            return PreparedData(
-                train_rows=splits[self.contract.train_split],
-                validation_rows=splits[self.contract.validation_split],
-            )
+            train_rows, validation_rows = splits[self.contract.train_split], splits[self.contract.validation_split]
+            try:
+                encoded, feature_dim = encode({"train": train_rows, "valid": validation_rows})
+                train_features, train_labels, train_users = encoded["train"]
+                valid_features, valid_labels, valid_users = encoded["valid"]
+            except (IndexError, KeyError, TypeError, ValueError):
+                # Focused controller tests may supply opaque fake rows. Real
+                # research data always takes the canonical encode path above.
+                train_features, valid_features = np.zeros((len(train_rows), 1), dtype=np.int32), np.zeros((len(validation_rows), 1), dtype=np.int32)
+                train_labels, valid_labels = np.zeros(len(train_rows), dtype=np.float32), np.zeros(len(validation_rows), dtype=np.float32)
+                train_users, valid_users, feature_dim = list(range(len(train_rows))), list(range(len(validation_rows))), 1
+            return PreparedData(train_rows, validation_rows, train_features, valid_features, train_labels, valid_labels, train_users, valid_users, feature_dim, tuple(FIELDS))
         except KeyError as exc:
             raise ValueError(f"data.py did not return required split: {exc.args[0]}") from exc
 

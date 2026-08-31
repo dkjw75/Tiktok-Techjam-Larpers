@@ -118,20 +118,6 @@ class MarkdownReporter:
             return [f"- Candidate recovery decision: {details.get('decision', 'unavailable')} — {details.get('rationale', '')}"]
         if action == "candidate_abandoned":
             return [f"- Candidate abandoned: {details.get('reason', 'no reason recorded')}"]
-        if action == "capability_verifier_completed":
-            return [f"- Capability verifier: {details.get('decision', 'unavailable')} — {details.get('rationale', '')}"]
-        if action == "capability_registered":
-            return [f"- Capability registered: {details.get('capability_id', 'unavailable')}"]
-        if action == "capability_not_registered":
-            return [f"- Capability not registered: {details.get('reason', 'no reason recorded')}"]
-        if action == "capability_recovery_decided":
-            return [f"- Capability recovery decision: {details.get('decision', 'unavailable')} — {details.get('rationale', '')}"]
-        if action == "capability_abandoned":
-            return [f"- Capability abandoned: {details.get('reason', 'no reason recorded')}"]
-        if action == "capability_integration_check_failed":
-            return [f"- Real integration check failed: {details.get('error', 'unavailable')}"]
-        if action == "capability_integration_check_passed":
-            return [f"- Real integration check passed with configuration: {details.get('config', 'unavailable')}"]
         if action == "coding_subagent_completed":
             return [f"- Candidate implementation prepared: {details.get('workspace', 'unavailable')}"]
         if action == "evidence_reviewed":

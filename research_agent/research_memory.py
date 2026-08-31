@@ -39,7 +39,7 @@ class ResearchMemory:
         return {"imported_records": imported, "source_runs": sources, "total_records": len(self.records())}
 
     def ingest_run(self, run_dir: str | Path) -> int:
-        """Append compact copies of iterations and material capability failures."""
+        """Append compact copies of iterations and material candidate failures."""
         directory = Path(run_dir)
         source_run = directory.name
         existing = self._keys()
@@ -52,8 +52,7 @@ class ResearchMemory:
         for event in _read_jsonl(directory / "experiments.jsonl"):
             if event.get("action") not in {
                 "candidate_failure_recorded", "isolated_candidate_rejected", "candidate_abandoned",
-                # Keep legacy names so earlier runs remain useful evidence.
-                "capability_failure_recorded", "capability_not_registered", "capability_abandoned", "safety_rejected",
+                "safety_rejected",
             }:
                 continue
             item = _failure_event(source_run, event)

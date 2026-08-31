@@ -19,6 +19,10 @@ class BenchmarkContract:
     gauc_metric: str = "GAUC"
     ndcg_metric: str = "nDCG@5"
     primary_metric: str = "primary"
+    # A full three-seed confirmation can replace the incumbent with a smaller,
+    # still material validation gain. The stricter improvement_threshold below
+    # remains the project stop-rule threshold.
+    acceptance_threshold: float = 0.001
     improvement_threshold: float = 0.002
     non_improvement_limit: int = 3
     target_primary: float = 0.65

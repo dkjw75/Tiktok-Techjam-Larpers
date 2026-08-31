@@ -11,7 +11,7 @@ from research_agent.store import ArtifactStore
 
 
 def loader(_data_dir):
-    return {"train": [("train",)], "valid": [("valid",)], "test": [("test",)]}
+    return {"train": [("train",)], "valid": [("valid",), ("valid",)], "test": [("test",)]}
 
 
 def strong_candidate(_data, _config, _run_dir):

@@ -23,7 +23,7 @@ class ResearchMemoryTests(unittest.TestCase):
                 {"experiment_id": "exp_003", "hypothesis": "pairwise idea again", "rationale": "test", "config": {"extension_name": "pairwise_v1"}, "changed_factors": ["loss"], "decision": "rejected", "metrics": {"primary": 0.58}, "delta_primary": -0.02},
             ])
             _write_jsonl(old_run / "experiments.jsonl", [
-                {"timestamp": "now", "action": "capability_failure_recorded", "experiment_id": "exp_004", "details": {"attempt_id": "a1", "failure_class": "hook_signature_mismatch", "reason": "wrong hook"}},
+                {"timestamp": "now", "action": "candidate_failure_recorded", "experiment_id": "exp_004", "details": {"attempt_id": "a1", "failure_class": "runtime_error", "reason": "bad candidate"}},
             ])
             current = root / "runs_autonomous_02"
             memory = ResearchMemory(root)
@@ -37,7 +37,7 @@ class ResearchMemoryTests(unittest.TestCase):
             self.assertEqual(len(memory.records()), 3)
             self.assertEqual(summary["method_evidence"][0]["method"], "pairwise_v1")
             self.assertEqual(summary["method_evidence"][0]["status"], "deprioritized")
-            self.assertEqual(summary["recent_implementation_failures"][0]["failure_class"], "hook_signature_mismatch")
+            self.assertEqual(summary["recent_implementation_failures"][0]["failure_class"], "runtime_error")
 
     def test_new_iteration_is_available_without_reimporting_a_run(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -47,4 +47,3 @@ class ResearchMemoryTests(unittest.TestCase):
             self.assertTrue(memory.append_iteration(record, source_run="runs_new"))
             self.assertFalse(memory.append_iteration(record, source_run="runs_new"))
             self.assertEqual(memory.planner_summary()["recent_evidence"][0]["experiment_id"], "exp_001")
-

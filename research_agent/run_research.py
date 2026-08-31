@@ -9,17 +9,10 @@ from .architecture_context import ArchitectureContext, ArchitectureContextError
 from .controller import ExperimentController
 from .finalize import finalize_run
 from .logger import ResearchLogger
-from .agent_team import LLMResearchPlanner, LLMResearchTeam
+from .agent_team import LLMResearchTeam
 from .broad_loop import BroadAutonomousLoop
-from .critic import ProposalCritic
-from .fidelity import FidelityManager
 from .llm_planner import LLMPlanningError, OpenAIPlanner
-from .loop import AutonomousResearchLoop
-from .models.torch_fm import run_torch_fm_candidate
-from .regions import SearchRegionManager
-from .review import EvidenceReviewer
 from .runner import ExperimentRunner
-from .search import SearchController
 from .safety import SafetyValidator
 from .store import ArtifactStore
 from .research_memory import ResearchMemory
@@ -32,18 +25,26 @@ def main() -> None:
     parser.add_argument("--artifact-dir", default="runs/current", help="append-only artifact directory")
     parser.add_argument("--data-dir", default=str(BENCHMARK_CONTRACT.data_dir))
     parser.add_argument(
-        "--mode", choices=("self-extending", "lab"), default="self-extending",
-        help="self-extending is the autonomous default; lab retains the older fixed-tool workflow",
+        "--mode", choices=("autonomous",), default="autonomous",
+        help="full isolated-candidate autonomous research workflow",
     )
     args = parser.parse_args()
     if args.cycles <= 0:
         parser.error("--cycles must be positive")
 
-    contract = replace(BENCHMARK_CONTRACT, data_dir=Path(args.data_dir))
-    store = ArtifactStore(args.artifact_dir)
-    logger = ResearchLogger(store)
     workspace_root = Path(__file__).resolve().parents[1]
-    research_memory = ResearchMemory(workspace_root / "runs")
+    runs_root = (workspace_root / "runs").resolve()
+    artifact_dir = Path(args.artifact_dir)
+    artifact_path = (workspace_root / artifact_dir).resolve() if not artifact_dir.is_absolute() else artifact_dir.resolve()
+    try:
+        artifact_path.relative_to(runs_root)
+    except ValueError:
+        parser.error("--artifact-dir must be inside the project's runs/ folder")
+
+    contract = replace(BENCHMARK_CONTRACT, data_dir=Path(args.data_dir))
+    store = ArtifactStore(artifact_path)
+    logger = ResearchLogger(store)
+    research_memory = ResearchMemory(runs_root)
     memory_status = research_memory.bootstrap(exclude_run=store.root)
     logger.log_action("cross_run_memory_loaded", details=memory_status)
     architecture_path = Path(__file__).resolve().parents[1] / "docs" / "agent-architecture.md"
@@ -68,20 +69,7 @@ def main() -> None:
         logger.log_action("llm_configuration_failed", details={"error": str(exc), "recovery": "add OPENAI_API_KEY to .env and rerun"})
         raise SystemExit(str(exc))
     team = LLMResearchTeam(planner.client, architecture)
-    if args.mode == "lab":
-        loop = AutonomousResearchLoop(
-            controller=controller,
-            logger=logger,
-            planner=LLMResearchPlanner(team),
-            search=SearchController(seed=0),
-            critic=ProposalCritic(validator),
-            reviewer=EvidenceReviewer(),
-            fidelity=FidelityManager(),
-            regions=SearchRegionManager(),
-            candidate=run_torch_fm_candidate,
-        )
-    else:
-        loop = BroadAutonomousLoop(controller, logger, team, research_memory=research_memory)
+    loop = BroadAutonomousLoop(controller, logger, team, research_memory=research_memory)
     try:
         results = loop.run(min(args.cycles, contract.max_experiments))
     except LLMPlanningError as exc:

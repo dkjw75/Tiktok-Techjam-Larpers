@@ -20,7 +20,7 @@ from .research_memory import ResearchMemory
 class BroadAutonomousLoop:
     """Lets the LLM execute complete, checked candidates in isolated workspaces."""
 
-    max_repairs_per_capability = 1
+    max_repairs_per_candidate = 1
     novelty_cooldown = 3
 
     def __init__(
@@ -170,7 +170,6 @@ class BroadAutonomousLoop:
                 self.team,
                 history,
                 state,
-                self.logger.store.read_capabilities(),
                 self.research_memory.planner_summary() if self.research_memory is not None else None,
             )
             fingerprint = _proposal_fingerprint(plan)
@@ -219,9 +218,9 @@ class BroadAutonomousLoop:
         """Preflight a complete candidate; hook registration is never a training gate."""
         failure = ""
         attempted_sources: set[str] = set()
-        for attempt in range(self.max_repairs_per_capability + 1):
+        for attempt in range(self.max_repairs_per_candidate + 1):
             if attempt:
-                decision, decision_meta = self.team.decide_capability_recovery(plan, failure)
+                decision, decision_meta = self.team.decide_candidate_recovery(plan, failure)
                 self.logger.log_action("candidate_recovery_decided", experiment_id=experiment_id, details={**decision, "llm": decision_meta, "attempt": attempt})
                 if decision["decision"] != "repair":
                     self.logger.log_action("candidate_abandoned", experiment_id=experiment_id, details={"reason": decision["rationale"]})
@@ -275,20 +274,19 @@ class BroadAutonomousLoop:
     def _preflight(self, candidate: CandidateCallable, config: Mapping[str, Any], experiment_id: str) -> None:
         """Run a small real data.py-backed execution before screening training."""
         prepared = self.controller.runner._load_prepared_data()
-        sample = PreparedData(train_rows=prepared.train_rows[:4096], validation_rows=prepared.validation_rows[:4096])
+        sample = replace(
+            prepared,
+            train_rows=prepared.train_rows[:4096], validation_rows=prepared.validation_rows[:4096],
+            train_features=prepared.train_features[:4096], validation_features=prepared.validation_features[:4096],
+            train_labels=prepared.train_labels[:4096], validation_labels=prepared.validation_labels[:4096],
+            train_user_ids=prepared.train_user_ids[:4096], validation_user_ids=prepared.validation_user_ids[:4096],
+        )
         preflight_config = {**config, "epochs": 1, "patience": 1, "batch_size": min(int(config.get("batch_size", 1024)), 1024)}
-        if isinstance(preflight_config.get("_locked_settings"), Mapping):
-            preflight_config["_locked_settings"] = {
-                **preflight_config["_locked_settings"],
-                "epochs": preflight_config["epochs"],
-                "patience": preflight_config["patience"],
-                "batch_size": preflight_config["batch_size"],
-            }
         preflight_dir = self.logger.store.root / "candidate_workspaces" / experiment_id / "preflight"
         preflight_dir.mkdir(parents=True, exist_ok=True)
         output = candidate(sample, preflight_config, preflight_dir)
-        if len(output.user_ids) != len(output.labels) or len(output.labels) != len(output.scores):
-            raise RuntimeError("preflight returned inconsistent prediction lengths")
+        if not (len(output.user_ids) == len(output.labels) == len(output.scores) == len(sample.validation_rows)):
+            raise RuntimeError("preflight output must align exactly to the canonical validation sample")
 
 
 def _normalize_model_family(value: str) -> str:
@@ -313,16 +311,6 @@ def _candidate_config(patch: Mapping[str, Any]) -> dict[str, Any]:
     return config
 
 
-def _lock_candidate_config(config: Mapping[str, Any], hook_manifest: Mapping[str, str]) -> dict[str, Any]:
-    """Lock non-hypothesis settings so each observed delta is attributable."""
-    locked = dict(config)
-    hook_type = hook_manifest.get("hook_type")
-    locked["loss"] = "pairwise" if hook_type == "host_pairwise" else ("custom" if hook_type in {"loss", "combined_extension"} else "pointwise")
-    protected = ("loss", "learning_rate", "l2", "embedding_dim", "batch_size", "seed", "epochs", "patience")
-    locked["_locked_settings"] = {key: locked[key] for key in protected}
-    return locked
-
-
 def _code_with_failure_context(team: Any, plan: Any, failure: str) -> tuple[Any, dict[str, Any]]:
     try:
         return team.code(plan, failure=failure)
@@ -335,14 +323,13 @@ def _propose_with_memory(
     team: Any,
     history: list[Mapping[str, Any]],
     state: Mapping[str, Any],
-    capabilities: list[Mapping[str, Any]],
     memory: Mapping[str, Any] | None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Keep focused legacy test doubles compatible with the new planner input."""
+    """Keep focused test doubles compatible with the planner input."""
     try:
-        return team.propose(history, state, capabilities, research_memory=memory)
+        return team.propose(history, state, research_memory=memory)
     except TypeError:
-        return team.propose(history, state, capabilities)
+        return team.propose(history, state)
 
 
 def _proposal_fingerprint(plan: Any) -> str:
@@ -352,14 +339,8 @@ def _proposal_fingerprint(plan: Any) -> str:
 
 def _failure_class(failure: str) -> str:
     lowered = failure.lower()
-    if "missing" in lowered and "positional argument" in lowered:
-        return "hook_signature_mismatch"
-    if "unsupported host hook" in lowered or "unsupported capability" in lowered:
-        return "unsupported_capability"
     if "does not implement" in lowered or "inconsistent with the claimed" in lowered:
         return "hypothesis_not_implemented"
-    if "verif" in lowered or "unsupported" in lowered:
-        return "verification_rejected"
-    if "isolated-code" in lowered or "generated candidate" in lowered:
+    if "prohibited isolated-runtime" in lowered or "prohibited isolated" in lowered:
         return "unsafe_source"
     return "integration_or_preflight_failed"
