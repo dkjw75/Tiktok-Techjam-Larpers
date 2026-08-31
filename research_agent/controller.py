@@ -8,6 +8,7 @@ from .contracts import BENCHMARK_CONTRACT, BenchmarkContract
 from .logger import ResearchLogger
 from .metrics import MetricsValidationError, evaluate_predictions
 from .runner import CandidateCallable, ExperimentRunner, RunnerResult
+from .research_memory import ResearchMemory
 from .safety import ExperimentProposal, SafetyReport, SafetyValidator
 from .state import ResearchState
 
@@ -34,6 +35,7 @@ class ExperimentController:
         contract: BenchmarkContract = BENCHMARK_CONTRACT,
         state: ResearchState | None = None,
         max_iterations: int | None = None,
+        research_memory: ResearchMemory | None = None,
     ) -> None:
         self.logger = logger
         self.runner = runner
@@ -42,6 +44,7 @@ class ExperimentController:
         persisted_state = logger.store.read_root_json("state.json")
         self.state = state or (ResearchState.from_dict(persisted_state) if persisted_state else ResearchState())
         self.max_iterations = max_iterations
+        self.research_memory = research_memory
         self._historical_configs = [
             record["config"] for record in logger.store.read_iterations() if "config" in record
         ]
@@ -75,6 +78,7 @@ class ExperimentController:
         )
         report = self.validator.validate(proposal, historical_configs=self._historical_configs)
         if not report.passed:
+            self.state.invalid_proposals += 1
             self.logger.log_action(
                 "safety_rejected",
                 experiment_id=proposal.experiment_id,
@@ -88,6 +92,7 @@ class ExperimentController:
                 safety_report=report,
                 patch_path=str(patch_path),
                 parent_experiment_id=parent_experiment_id,
+                count_toward_budget=False,
             )
 
         self._historical_configs.append(proposal.config)
@@ -140,7 +145,28 @@ class ExperimentController:
             )
 
         delta = float(metrics[self.contract.primary_metric]) - self.state.current_best_primary
-        if delta > self.contract.improvement_threshold:
+        is_screening_run = proposal.config.get("fidelity") == "low"
+        is_parity_run = proposal.config.get("run_type") == "parity"
+        if is_parity_run:
+            decision = "parity"
+            recovery = None
+            self.logger.log_action(
+                "parity_completed",
+                experiment_id=proposal.experiment_id,
+                details={"delta_from_reference": delta},
+            )
+        elif is_screening_run:
+            # Cheap runs rank candidates for promotion; they never compete with
+            # the full-budget incumbent or consume the scientific stop budget.
+            decision = "screened"
+            recovery = self._restore_message()
+            self.logger.log_action(
+                "candidate_screened",
+                experiment_id=proposal.experiment_id,
+                details={"delta_from_full_incumbent": delta},
+            )
+            self.state.screening_runs_completed += 1
+        elif delta > self.contract.improvement_threshold:
             decision = "accepted"
             self.state.current_best_experiment_id = proposal.experiment_id
             self.state.current_best_primary = float(metrics[self.contract.primary_metric])
@@ -172,6 +198,7 @@ class ExperimentController:
             patch_path=str(patch_path),
             runner_result=runner_result,
             parent_experiment_id=parent_experiment_id,
+            count_toward_budget=not is_screening_run,
         )
 
     def record_manual_intervention(
@@ -188,6 +215,11 @@ class ExperimentController:
             effect=effect,
             experiment_id=experiment_id,
         )
+
+    def record_implementation_failure(self) -> None:
+        """Persist a generated-code failure without spending experiment budget."""
+        self.state.implementation_failures += 1
+        self._persist_state()
 
     def begin_plateau_restart(self) -> None:
         """Record a plateau and allow the LLM to investigate a new direction."""
@@ -217,6 +249,7 @@ class ExperimentController:
         runtime_seconds: float = 0.0,
         runner_result: RunnerResult | None = None,
         parent_experiment_id: str,
+        count_toward_budget: bool = True,
     ) -> IterationResult:
         self.state.consecutive_non_improvements += 1
         self.logger.log_action(
@@ -236,6 +269,7 @@ class ExperimentController:
             patch_path=patch_path,
             runner_result=runner_result,
             parent_experiment_id=parent_experiment_id,
+            count_toward_budget=count_toward_budget,
         )
 
     def _complete_iteration(
@@ -252,8 +286,11 @@ class ExperimentController:
         patch_path: str,
         runner_result: RunnerResult | None,
         parent_experiment_id: str,
+        count_toward_budget: bool = True,
     ) -> IterationResult:
-        self.state.completed_iterations += 1
+        if count_toward_budget and proposal.config.get("run_type") != "parity":
+            self.state.completed_iterations += 1
+            self.state.full_evaluations_completed += 1
         self._apply_stop_rule()
         record = {
             "experiment_id": proposal.experiment_id,
@@ -276,7 +313,12 @@ class ExperimentController:
             "code_diff_path": patch_path,
             "state_after": self.state.as_dict(),
         }
-        self.logger.record_iteration(record)
+        completed_record = self.logger.record_iteration(record)
+        if self.research_memory is not None:
+            self.research_memory.append_iteration(
+                completed_record,
+                source_run=self.logger.store.root.name,
+            )
         self._persist_state()
         return IterationResult(
             proposal.experiment_id,

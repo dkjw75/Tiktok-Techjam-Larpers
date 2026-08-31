@@ -210,6 +210,45 @@ LLM:
 
 ## 4. Agent Layer
 
+### 4.0 Autonomous proposal policy
+
+The production research loop must not require the LLM to select from a fixed
+catalogue of experiment names. The LLM receives the benchmark contract,
+canonical data interface, prior evidence, verified capabilities, and failure
+history, then proposes one novel, in-scope, controlled experiment. Safety is
+enforced by deterministic validation and isolated execution rather than by a
+menu of pre-authored directions.
+
+The default operating mode is self-extending autonomy: the LLM may formulate
+and implement complete FM-family candidates—model/training logic, ranking
+objectives, sampling, and leakage-safe feature logic—that use only `data.py`
+outputs. Each candidate runs only in its own workspace and receives prepared
+train/validation rows, safe PyTorch primitives, and a bounded configuration;
+it does not receive raw paths or test data. A deterministic host statically
+rejects unsafe source, preflights it on a small real-data slice, enforces
+budgets, and retains the immutable baseline and evaluator. A new dependency,
+substantially different model family, or an experiment outside the approved
+project scope still requires human review under the root rules.
+
+Autonomous screening must use one parity-locked configuration except for the
+single declared hypothesis change. Short screens are reported separately from
+full evaluations. Once at least three comparable autonomous screens exist, the
+controller promotes the strongest unpromoted candidate from the global screen
+leaderboard—not merely from the same research label—to the full benchmark
+budget. Invalid proposals and failed candidate preflights are visible but do
+not consume full-evaluation budget. Every run must end with an explicit
+completion, budget, review, recovery-failure, or crash status event.
+
+Cross-run learning uses a shared, append-only evidence index. At startup, a
+run imports compact copies of completed iteration records and material
+candidate failures from earlier run folders; it never edits those original
+artifacts. The planner receives a bounded summary of prior metrics, failures,
+and repeatedly weak methods before proposing its next hypothesis. This summary
+must guide novelty, but it is not a fixed catalogue or a ban list: a method may
+be revisited when the LLM states the material difference from the failed prior
+attempt. Each completed iteration and generated-candidate failure is appended
+to the index immediately for use by later iterations and future runs.
+
 ### 4.1 Research/Orchestrator Agent
 
 The main LLM agent is responsible for high-level experimental reasoning.

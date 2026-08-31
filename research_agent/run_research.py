@@ -5,30 +5,36 @@ import argparse
 from dataclasses import replace
 from pathlib import Path
 
+from .architecture_context import ArchitectureContext, ArchitectureContextError
 from .controller import ExperimentController
-from .critic import ProposalCritic
-from .fidelity import FidelityManager
 from .finalize import finalize_run
 from .logger import ResearchLogger
+from .agent_team import LLMResearchPlanner, LLMResearchTeam
+from .broad_loop import BroadAutonomousLoop
+from .critic import ProposalCritic
+from .fidelity import FidelityManager
+from .llm_planner import LLMPlanningError, OpenAIPlanner
 from .loop import AutonomousResearchLoop
 from .models.torch_fm import run_torch_fm_candidate
-from .agent_team import LLMResearchTeam
-from .broad_loop import BroadAutonomousLoop
-from .llm_planner import LLMPlanningError, OpenAIPlanner
 from .regions import SearchRegionManager
 from .review import EvidenceReviewer
 from .runner import ExperimentRunner
-from .safety import SafetyValidator
 from .search import SearchController
+from .safety import SafetyValidator
 from .store import ArtifactStore
+from .research_memory import ResearchMemory
 from .contracts import BENCHMARK_CONTRACT
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the validation-only KuaiRand autonomous research loop.")
     parser.add_argument("--cycles", type=int, default=20, help="maximum research cycles to attempt (capped at the safety budget)")
-    parser.add_argument("--artifact-dir", default="runs", help="append-only artifact directory")
+    parser.add_argument("--artifact-dir", default="runs/current", help="append-only artifact directory")
     parser.add_argument("--data-dir", default=str(BENCHMARK_CONTRACT.data_dir))
+    parser.add_argument(
+        "--mode", choices=("self-extending", "lab"), default="self-extending",
+        help="self-extending is the autonomous default; lab retains the older fixed-tool workflow",
+    )
     args = parser.parse_args()
     if args.cycles <= 0:
         parser.error("--cycles must be positive")
@@ -36,26 +42,60 @@ def main() -> None:
     contract = replace(BENCHMARK_CONTRACT, data_dir=Path(args.data_dir))
     store = ArtifactStore(args.artifact_dir)
     logger = ResearchLogger(store)
+    workspace_root = Path(__file__).resolve().parents[1]
+    research_memory = ResearchMemory(workspace_root / "runs")
+    memory_status = research_memory.bootstrap(exclude_run=store.root)
+    logger.log_action("cross_run_memory_loaded", details=memory_status)
+    architecture_path = Path(__file__).resolve().parents[1] / "docs" / "agent-architecture.md"
+    try:
+        architecture = ArchitectureContext.from_file(architecture_path, contract)
+    except ArchitectureContextError as exc:
+        logger.log_action("architecture_context_failed", details={"error": str(exc), "recovery": "restore docs/agent-architecture.md before running research"})
+        raise SystemExit(str(exc))
+    store.write_root_json("architecture_context.json", architecture.artifact_record())
     validator = SafetyValidator(max_runtime_seconds=600.0)
     controller = ExperimentController(
         logger=logger,
         runner=ExperimentRunner(logger, contract=contract),
         validator=validator,
         contract=contract, max_iterations=min(args.cycles, contract.max_experiments),
+        research_memory=research_memory,
     )
-    logger.log_action("research_run_started", details={"max_cycles": args.cycles, "data_interface": "data.py", "selection_split": contract.validation_split})
+    logger.log_action("research_run_started", details={"max_cycles": args.cycles, "data_interface": "data.py", "selection_split": contract.validation_split, "architecture_source": str(architecture_path), "architecture_sha256": architecture.source_sha256})
     try:
         planner = OpenAIPlanner.from_environment()
     except LLMPlanningError as exc:
         logger.log_action("llm_configuration_failed", details={"error": str(exc), "recovery": "add OPENAI_API_KEY to .env and rerun"})
         raise SystemExit(str(exc))
-    loop = BroadAutonomousLoop(controller, logger, LLMResearchTeam(planner.client))
+    team = LLMResearchTeam(planner.client, architecture)
+    if args.mode == "lab":
+        loop = AutonomousResearchLoop(
+            controller=controller,
+            logger=logger,
+            planner=LLMResearchPlanner(team),
+            search=SearchController(seed=0),
+            critic=ProposalCritic(validator),
+            reviewer=EvidenceReviewer(),
+            fidelity=FidelityManager(),
+            regions=SearchRegionManager(),
+            candidate=run_torch_fm_candidate,
+        )
+    else:
+        loop = BroadAutonomousLoop(controller, logger, team, research_memory=research_memory)
     try:
         results = loop.run(min(args.cycles, contract.max_experiments))
     except LLMPlanningError as exc:
         logger.log_action("llm_planning_failed", details={"error": str(exc), "recovery": "run paused; correct the LLM configuration and resume"})
+        logger.log_action("research_run_finished", details={"status": "stopped_after_recovery_failure", "mode": args.mode, "reason": str(exc)})
         raise SystemExit(str(exc))
-    logger.log_action("research_run_finished", details={"cycles_completed": results, "stop_reason": controller.state.stop_reason})
+    except Exception as exc:
+        logger.log_action("research_run_finished", details={"status": "unexpected_crash", "mode": args.mode, "reason": f"{type(exc).__name__}: {exc}"})
+        raise
+    status = "budget_reached" if controller.state.stop_reason else "completed"
+    logger.log_action(
+        "research_run_finished",
+        details={"status": status, "cycles_completed": len(results) if isinstance(results, list) else results, "mode": args.mode, "stop_reason": controller.state.stop_reason},
+    )
     try:
         final = finalize_run(store, contract=contract)
     except Exception as exc:

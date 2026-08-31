@@ -49,7 +49,10 @@ class OpenAIResponsesClient:
         try:
             with urlopen(request, timeout=60) as response:
                 raw = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError) as exc:
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:1000]
+            raise LLMPlanningError(f"OpenAI planning request failed: HTTP {exc.code}: {detail}") from exc
+        except (URLError, TimeoutError) as exc:
             raise LLMPlanningError(f"OpenAI planning request failed: {exc}") from exc
         text = raw.get("output_text") or _extract_output_text(raw)
         if not isinstance(text, str):
@@ -103,7 +106,7 @@ class OpenAIPlanner:
             rationale=rationale,
             search_space=template["search_space"],
             success_evidence="Validation primary improves by more than 0.002 over the accepted parent.",
-            evaluation_budget={"low_epochs": 4, "full_epochs": 12},
+            evaluation_budget={"low_epochs": 4, "full_epochs": 40, "patience": 4},
             strategy=strategy,
         )
 

@@ -46,7 +46,18 @@ class ArtifactStore:
         return path
 
     def append_event(self, event: dict[str, Any]) -> None:
-        self._append_jsonl(self.events_path, event)
+        # JSONL stays machine-readable: a blank separator is written only in
+        # the event stream and readers intentionally ignore whitespace lines.
+        # This makes consecutive broad hypotheses easier to inspect by hand.
+        self._append_jsonl(
+            self.events_path,
+            event,
+            blank_line_before=(
+                event.get("action") == "llm_broad_hypothesis_proposed"
+                and self.events_path.exists()
+                and self.events_path.stat().st_size > 0
+            ),
+        )
 
     def append_iteration(self, iteration: dict[str, Any]) -> None:
         self._append_jsonl(self.iterations_path, iteration)
@@ -113,9 +124,17 @@ class ArtifactStore:
             return None
         return json.loads(source.read_text(encoding="utf-8"))
 
-    def _append_jsonl(self, destination: Path, payload: dict[str, Any]) -> None:
+    def _append_jsonl(
+        self,
+        destination: Path,
+        payload: dict[str, Any],
+        *,
+        blank_line_before: bool = False,
+    ) -> None:
         self.initialize()
         with destination.open("a", encoding="utf-8") as handle:
+            if blank_line_before:
+                handle.write("\n")
             handle.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
 
     @staticmethod

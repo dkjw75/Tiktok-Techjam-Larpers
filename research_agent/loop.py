@@ -12,7 +12,7 @@ from .planner import ResearchDirection, ResearchPlanner
 from .review import EvidenceReviewer
 from .regions import SearchRegionManager
 from .runner import CandidateCallable
-from .search import SearchController, SearchState
+from .search import SearchController, SearchSpaceExhausted, SearchState
 
 
 @dataclass(frozen=True)
@@ -65,13 +65,28 @@ class AutonomousResearchLoop:
             )
             if review.action == "restart":
                 self.controller.begin_plateau_restart()
-            direction = self.planner.propose(history, self.controller.state)
+            try:
+                direction = self.planner.propose(history, self.controller.state)
+            except SearchSpaceExhausted as exc:
+                self.logger.log_action("research_search_exhausted", details={"reason": str(exc)})
+                break
             llm_metadata = getattr(self.planner, "last_metadata", None)
             if llm_metadata:
                 self.logger.log_action("llm_hypothesis_generated", details=dict(llm_metadata))
             self.logger.log_action("research_direction_proposed", details=direction.as_dict())
+            for specialist in getattr(self.planner, "last_specialist_metadata", []):
+                self.logger.log_action("llm_specialist_consulted", details=specialist)
             search_state = self.regions.choose_search_state(direction, history, self.controller.state, review)
-            proposal = self.search.propose_trial(direction, self.controller.state, history, search_state=search_state)
+            try:
+                proposal = self.search.propose_trial(direction, self.controller.state, history, search_state=search_state)
+            except SearchSpaceExhausted as exc:
+                self.logger.log_action(
+                    "search_direction_exhausted",
+                    details={"direction_id": direction.direction_id, "reason": str(exc)},
+                )
+                if hasattr(self.planner, "mark_exhausted"):
+                    self.planner.mark_exhausted(direction.direction_id)
+                continue
             critic_result = self.critic.review(proposal, history)
             self.logger.log_action(
                 "proposal_critic_reviewed",
@@ -94,9 +109,16 @@ class AutonomousResearchLoop:
         proposal,
         iteration: IterationResult,
     ) -> IterationResult | None:
-        if iteration.decision not in {"accepted", "inconclusive"} or not iteration.metrics:
+        # A low-fidelity near miss may be rejected as a final result while
+        # still being exactly the evidence ASHA should re-check at full budget.
+        if not iteration.metrics:
             return None
-        if not self.fidelity.should_promote(iteration.metrics, self.controller.state.current_best_primary):
+        if not self.fidelity.should_promote(
+            iteration.metrics,
+            self.controller.state.current_best_primary,
+            proposal=proposal,
+            history=self.logger.store.read_iterations(),
+        ):
             return None
         history = self.logger.store.read_iterations()
         experiment_id = self.search._next_experiment_id(history)

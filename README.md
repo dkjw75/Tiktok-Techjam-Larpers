@@ -25,7 +25,7 @@ python3 baseline.py --model fm
 The research agent uses an OpenAI model to generate the high-level hypothesis and rationale. Copy `.env.example` to `.env` if needed, add `OPENAI_API_KEY`, then run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m research_agent.run_research --artifact-dir runs_llm
+.\.venv\Scripts\python.exe -m research_agent.run_research --artifact-dir runs/runs_llm
 ```
 
 It selects experiments using validation only. It stops successfully at validation primary `0.65`, requests an LLM-guided new research direction after three non-improving iterations, and has a hard cap of 20 experiments.

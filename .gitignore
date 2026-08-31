@@ -18,6 +18,8 @@ __pycache__/
 checkpoints/
 runs/
 runs_llm*/
+runs_autonomous*
+research_memory/
 logs/
 submission*.csv
 *.ckpt

@@ -28,7 +28,7 @@ class AutonomousLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = ArtifactStore(directory)
             logger = ResearchLogger(store)
-            validator = SafetyValidator(max_runtime_seconds=60)
+            validator = SafetyValidator(max_runtime_seconds=600)
             controller = ExperimentController(
                 logger=logger,
                 runner=ExperimentRunner(logger, data_loader=loader),
@@ -53,3 +53,28 @@ class AutonomousLoopTests(unittest.TestCase):
             self.assertIn("research_direction_proposed", actions)
             self.assertIn("proposal_critic_reviewed", actions)
             self.assertEqual(store.read_iterations()[0]["direction_id"], results[0].direction.direction_id)
+
+    def test_near_baseline_rejected_low_fidelity_trial_can_be_promoted_by_asha(self):
+        class AlwaysPromote(FidelityManager):
+            def should_promote(self, *args, **kwargs): return True
+
+        def near_miss(_data, _config, _run_dir):
+            return CandidateOutput(["u", "u"], [1, 0], [0.1, 0.9])
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = ArtifactStore(directory)
+            logger = ResearchLogger(store)
+            validator = SafetyValidator(max_runtime_seconds=600)
+            controller = ExperimentController(
+                logger=logger,
+                runner=ExperimentRunner(logger, data_loader=loader),
+                validator=validator,
+                state=ResearchState(current_best_primary=0.61),
+            )
+            loop = AutonomousResearchLoop(
+                controller=controller, logger=logger, planner=EvidencePlanner(seed=0),
+                search=SearchController(seed=0), critic=ProposalCritic(validator),
+                reviewer=EvidenceReviewer(), fidelity=AlwaysPromote(), candidate=near_miss,
+            )
+            loop.run(max_cycles=1)
+            self.assertIn("asha_promotion", [item["search_strategy"] for item in store.read_iterations()])

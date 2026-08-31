@@ -122,6 +122,22 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(result.decision, "rejected")
         self.assertFalse((self.store.runs_dir / "exp_003").exists())
         self.assertIn("exactly one", result.error)
+        self.assertEqual(controller.state.completed_iterations, 0)
+
+    def test_low_fidelity_trial_is_screened_without_consuming_budget(self):
+        controller = ExperimentController(
+            logger=self.logger,
+            runner=self.runner,
+            validator=self.validator,
+            state=ResearchState(current_best_primary=0.5),
+        )
+
+        result = controller.run_iteration(
+            proposal("exp_screen", config={"candidate": "screen", "fidelity": "low"}), strong_candidate
+        )
+
+        self.assertEqual(result.decision, "screened")
+        self.assertEqual(controller.state.completed_iterations, 0)
 
     def test_failure_recovers_and_requests_restart_after_three_non_improvements(self):
         controller = ExperimentController(

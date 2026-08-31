@@ -89,7 +89,7 @@ class EvidencePlanner:
                 rationale="Optimize the existing PyTorch FM without changing its feature set or model family.",
                 search_space={"loss": ["pointwise"], "learning_rate": [0.0005, 0.001, 0.002], "l2": [0.0, 1e-6, 1e-5]},
                 success_evidence="Validation primary improves by more than 0.002 over the accepted parent.",
-                evaluation_budget={"low_epochs": 4, "full_epochs": 12},
+                evaluation_budget={"low_epochs": 4, "full_epochs": 40, "patience": 4},
                 strategy="bootstrap",
             ),
             ResearchDirection(
@@ -98,7 +98,7 @@ class EvidencePlanner:
                 rationale="The benchmark is a within-user ranking task while the reference model uses pointwise loss.",
                 search_space={"loss": ["pairwise"], "learning_rate": [0.0005, 0.001], "l2": [0.0, 1e-6]},
                 success_evidence="Validation primary improves while both GAUC and nDCG@5 remain valid.",
-                evaluation_budget={"low_epochs": 4, "full_epochs": 12},
+                evaluation_budget={"low_epochs": 4, "full_epochs": 40, "patience": 4},
                 strategy="bootstrap",
             ),
         )

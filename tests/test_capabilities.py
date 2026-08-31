@@ -13,3 +13,5 @@ class CapabilityRegistryTests(unittest.TestCase):
             proposal = BroadProposal("A" * 30, "B" * 30, "training", "loss", "fm", False, ())
             record = CapabilityRegistry(store).register(proposal, "def run_candidate(): pass", {"decision": "verified"})
             self.assertEqual(store.read_capabilities()[0]["capability_id"], record["capability_id"])
+            self.assertIn("host_runtime", record)
+            self.assertEqual(record["hook"], {})

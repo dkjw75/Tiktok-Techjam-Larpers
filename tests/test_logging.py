@@ -31,6 +31,18 @@ class LoggingTests(unittest.TestCase):
         self.assertEqual([event["action"] for event in events], ["training_started", "evaluation_started"])
         self.assertEqual(events[0]["experiment_id"], "exp_001")
 
+    def test_broad_hypotheses_are_separated_by_a_blank_jsonl_line(self):
+        self.logger.log_action("training_started")
+        self.logger.log_action("llm_broad_hypothesis_proposed", details={"hypothesis": "A"})
+        self.logger.log_action("llm_broad_hypothesis_proposed", details={"hypothesis": "B"})
+
+        raw_lines = self.store.events_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(raw_lines[1], "")
+        self.assertEqual(raw_lines[3], "")
+        self.assertEqual([event["action"] for event in self.store.read_events()], [
+            "training_started", "llm_broad_hypothesis_proposed", "llm_broad_hypothesis_proposed",
+        ])
+
     def test_iteration_writes_jsonl_and_metric_summary(self):
         self.logger.record_iteration(
             {
@@ -70,3 +82,51 @@ class LoggingTests(unittest.TestCase):
     def test_report_explicitly_records_zero_interventions(self):
         report = MarkdownReporter(self.store).write()
         self.assertIn("Manual interventions: 0", report.read_text(encoding="utf-8"))
+
+    def test_report_separates_each_llm_proposal_and_its_outcome(self):
+        details = {
+            "hypothesis": "A loss change may improve ranking.",
+            "rationale": "It is a controlled training change.",
+            "controlled_change": "Use a training-only loss change.",
+            "area": "training",
+            "model_family": "fm",
+            "leakage_risks": ["Use training labels only."],
+        }
+        self.logger.log_action("llm_broad_hypothesis_proposed", details=details)
+        self.logger.log_action("capability_not_registered", details={"reason": "The source does not implement the loss."})
+        self.logger.log_action("llm_broad_hypothesis_proposed", details=details)
+
+        report = MarkdownReporter(self.store).write().read_text(encoding="utf-8")
+
+        self.assertIn("### Proposal 1", report)
+        self.assertIn("### Proposal 2", report)
+        self.assertIn("Capability not registered: The source does not implement the loss.", report)
+
+    def test_report_includes_capability_integration_result(self):
+        self.logger.log_action("llm_broad_hypothesis_proposed", details={
+            "hypothesis": "A custom loss may help.", "rationale": "It changes one training factor.",
+            "controlled_change": "Use a custom loss.", "area": "training", "model_family": "fm", "leakage_risks": [],
+        })
+        self.logger.log_action("capability_integration_check_passed", details={"config": {"loss": "custom"}})
+
+        report = MarkdownReporter(self.store).write().read_text(encoding="utf-8")
+
+        self.assertIn("Real integration check passed", report)
+
+    def test_report_renders_llm_selected_research_tool_as_a_proposal(self):
+        self.logger.log_action(
+            "research_direction_proposed",
+            details={
+                "direction_id": "fm_pairwise_search",
+                "hypothesis": "Pairwise ranking may help.",
+                "rationale": "The task is ranking-oriented.",
+                "search_space": {"loss": ["pairwise"]},
+                "strategy": "diverse_search",
+                "evaluation_budget": {"low_epochs": 4, "full_epochs": 12},
+            },
+        )
+
+        report = MarkdownReporter(self.store).write().read_text(encoding="utf-8")
+
+        self.assertIn("Research tool: fm_pairwise_search", report)
+        self.assertIn("Search strategy: diverse_search", report)
