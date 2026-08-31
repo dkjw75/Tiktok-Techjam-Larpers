@@ -31,6 +31,8 @@ class RunnerTests(unittest.TestCase):
             seen["train"] = data.train_rows
             seen["valid"] = data.validation_rows
             seen["has_test"] = hasattr(data, "test_rows")
+            seen["vocabulary_size"] = data.vocabulary_size
+            seen["field_count"] = data.field_count
             (run_dir / "checkpoint.note").write_text("candidate artifact", encoding="utf-8")
             return CandidateOutput(["u"], [1], [0.9], {"framework": "pytorch"})
 
@@ -45,6 +47,8 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(seen["train"], [("train",)])
         self.assertEqual(seen["valid"], [("valid",)])
         self.assertFalse(seen["has_test"])
+        self.assertEqual(seen["vocabulary_size"], 1)
+        self.assertEqual(seen["field_count"], 5)
         self.assertTrue((result.run_dir / "config.json").exists())
         self.assertTrue((result.run_dir / "checkpoint.note").exists())
 

@@ -16,7 +16,12 @@ from .logger import ResearchLogger
 
 @dataclass(frozen=True)
 class PreparedData:
-    """Canonical data.py output exposed to a candidate; test is absent."""
+    """Canonical categorical-field data exposed to a candidate; test is absent.
+
+    ``*_features`` is an integer matrix of shape ``(rows, field_count)``.  Each
+    value is a globally offset categorical ID, suitable for an embedding table
+    with ``vocabulary_size`` rows; it is not a dense feature vector.
+    """
 
     train_rows: Sequence[Any]
     validation_rows: Sequence[Any]
@@ -26,7 +31,8 @@ class PreparedData:
     validation_labels: Sequence[Any]
     train_user_ids: Sequence[Any]
     validation_user_ids: Sequence[Any]
-    feature_dim: int
+    vocabulary_size: int
+    field_count: int
     field_names: Sequence[str]
 
 
@@ -156,10 +162,26 @@ class ExperimentRunner:
             except (IndexError, KeyError, TypeError, ValueError):
                 # Focused controller tests may supply opaque fake rows. Real
                 # research data always takes the canonical encode path above.
-                train_features, valid_features = np.zeros((len(train_rows), 1), dtype=np.int32), np.zeros((len(validation_rows), 1), dtype=np.int32)
+                train_features = np.zeros((len(train_rows), len(FIELDS)), dtype=np.int32)
+                valid_features = np.zeros((len(validation_rows), len(FIELDS)), dtype=np.int32)
                 train_labels, valid_labels = np.zeros(len(train_rows), dtype=np.float32), np.zeros(len(validation_rows), dtype=np.float32)
                 train_users, valid_users, feature_dim = list(range(len(train_rows))), list(range(len(validation_rows))), 1
-            return PreparedData(train_rows, validation_rows, train_features, valid_features, train_labels, valid_labels, train_users, valid_users, feature_dim, tuple(FIELDS))
+            field_names = tuple(FIELDS)
+            _validate_categorical_features(train_features, feature_dim, len(field_names), "train_features")
+            _validate_categorical_features(valid_features, feature_dim, len(field_names), "validation_features")
+            return PreparedData(
+                train_rows,
+                validation_rows,
+                train_features,
+                valid_features,
+                train_labels,
+                valid_labels,
+                train_users,
+                valid_users,
+                feature_dim,
+                len(field_names),
+                field_names,
+            )
         except KeyError as exc:
             raise ValueError(f"data.py did not return required split: {exc.args[0]}") from exc
 
@@ -181,3 +203,21 @@ class ExperimentRunner:
             experiment_id=experiment_id,
             details={"error": message, "runtime_seconds": runtime_seconds},
         )
+
+
+def _validate_categorical_features(
+    features: Any,
+    vocabulary_size: int,
+    field_count: int,
+    name: str,
+) -> None:
+    """Enforce the host-owned encoded-input contract before candidates run."""
+    matrix = np.asarray(features)
+    if matrix.ndim != 2 or matrix.shape[1] != field_count:
+        raise ValueError(f"{name} must have shape (rows, {field_count}) of categorical field IDs")
+    if not np.issubdtype(matrix.dtype, np.integer):
+        raise ValueError(f"{name} must contain integer categorical field IDs")
+    if vocabulary_size <= 0:
+        raise ValueError("vocabulary_size must be positive")
+    if matrix.size and (int(matrix.min()) < 0 or int(matrix.max()) >= vocabulary_size):
+        raise ValueError(f"{name} contains an ID outside the embedding vocabulary")

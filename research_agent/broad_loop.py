@@ -6,6 +6,8 @@ import re
 from dataclasses import replace
 from typing import Any, Mapping
 
+import numpy as np
+
 from .agent_team import GeneratedCandidate, LLMResearchTeam, build_isolated_candidate
 from .controller import ExperimentController
 from .fidelity import FidelityManager
@@ -240,11 +242,14 @@ class BroadAutonomousLoop:
             attempted_sources.add(source_hash)
             workspace = self.logger.store.root / "candidate_workspaces" / experiment_id
             try:
+                workspace.mkdir(parents=True, exist_ok=True)
+                attempt_path = workspace / f"candidate_attempt_{attempt + 1:02d}.py"
+                attempt_path.write_text(source, encoding="utf-8")
                 candidate = build_isolated_candidate(source, workspace)
                 self.logger.log_action(
                     "isolated_candidate_static_check_passed",
                     experiment_id=experiment_id,
-                    details={"attempt": attempt, "source_sha256": source_hash},
+                    details={"attempt": attempt, "source_sha256": source_hash, "source_path": str(attempt_path)},
                 )
                 self._preflight(candidate, config, experiment_id)
                 verification = {"static_check": "passed", "preflight": "passed", "attempt": attempt, "source_sha256": source_hash}
@@ -273,6 +278,8 @@ class BroadAutonomousLoop:
 
     def _preflight(self, candidate: CandidateCallable, config: Mapping[str, Any], experiment_id: str) -> None:
         """Run a small real data.py-backed execution before screening training."""
+        self._synthetic_contract_preflight(candidate, config)
+        self.logger.log_action("isolated_candidate_synthetic_contract_completed", experiment_id=experiment_id, details={"user_id_type": "string", "field_count": 5})
         prepared = self.controller.runner._load_prepared_data()
         sample = replace(
             prepared,
@@ -287,6 +294,35 @@ class BroadAutonomousLoop:
         output = candidate(sample, preflight_config, preflight_dir)
         if not (len(output.user_ids) == len(output.labels) == len(output.scores) == len(sample.validation_rows)):
             raise RuntimeError("preflight output must align exactly to the canonical validation sample")
+
+    @staticmethod
+    def _synthetic_contract_preflight(candidate: CandidateCallable, config: Mapping[str, Any]) -> None:
+        """Exercise typed candidate inputs before spending time on real benchmark rows."""
+        rows = 32
+        field_count = 5
+        feature_rows = np.tile(np.arange(field_count, dtype=np.int32), (rows, 1))
+        labels = np.asarray([index % 2 for index in range(rows)], dtype=np.float32)
+        user_ids = [f"synthetic-user-{index // 2}" for index in range(rows)]
+        prepared = PreparedData(
+            train_rows=[("synthetic", index) for index in range(rows)],
+            validation_rows=[("synthetic", index) for index in range(rows)],
+            train_features=feature_rows,
+            validation_features=feature_rows.copy(),
+            train_labels=labels,
+            validation_labels=labels.copy(),
+            train_user_ids=user_ids,
+            validation_user_ids=list(user_ids),
+            vocabulary_size=field_count,
+            field_count=field_count,
+            field_names=("user_id", "video_id", "author_id", "tab", "dur_bucket"),
+        )
+        synthetic_config = {**config, "epochs": 1, "patience": 1, "batch_size": min(int(config.get("batch_size", 32)), 32)}
+        try:
+            output = candidate(prepared, synthetic_config, None)
+        except Exception as exc:
+            raise RuntimeError(f"synthetic contract preflight failed: {type(exc).__name__}: {exc}") from exc
+        if not (len(output.user_ids) == len(output.labels) == len(output.scores) == rows):
+            raise RuntimeError("synthetic contract preflight output must align exactly to validation rows")
 
 
 def _normalize_model_family(value: str) -> str:

@@ -108,6 +108,8 @@ class MarkdownReporter:
             return [f"- Candidate verifier: {details.get('decision', 'unavailable')} — {details.get('rationale', '')}"]
         if action == "isolated_candidate_static_check_passed":
             return ["- Deterministic isolated-source safety check passed."]
+        if action == "isolated_candidate_synthetic_contract_completed":
+            return ["- Synthetic typed-input preflight passed (including string user IDs)."]
         if action == "isolated_candidate_preflight_completed":
             return ["- Real-data candidate preflight passed."]
         if action == "isolated_candidate_preflight_failed":
