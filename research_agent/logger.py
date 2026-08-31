@@ -38,6 +38,7 @@ class ResearchLogger:
             "details": details or {},
         }
         self.store.append_event(event)
+        self._refresh_readable_summary()
         return event
 
     def record_iteration(self, record: dict[str, Any]) -> dict[str, Any]:
@@ -65,6 +66,7 @@ class ResearchLogger:
             experiment_id=completed["experiment_id"],
             details={"decision": completed["decision"]},
         )
+        self._refresh_readable_summary()
         return completed
 
     def record_manual_intervention(
@@ -88,6 +90,7 @@ class ResearchLogger:
             experiment_id=experiment_id,
             details={"reason": reason},
         )
+        self._refresh_readable_summary()
         return intervention
 
     def record_code_diff(self, experiment_id: str, diff_text: str) -> Path:
@@ -101,3 +104,9 @@ class ResearchLogger:
 
     def _timestamp(self) -> str:
         return self.clock().astimezone(timezone.utc).isoformat()
+
+    def _refresh_readable_summary(self) -> None:
+        """Keep a human-readable run log current even if a run stops abruptly."""
+        from .reporter import MarkdownReporter
+
+        MarkdownReporter(self.store).write()

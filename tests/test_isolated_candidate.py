@@ -97,7 +97,7 @@ def run_candidate(prepared, config, run_dir):
     train_ids = feature_ids(prepared, 'train')
     labels = binary_labels(prepared, 'train')
     users = grouping_user_ids(prepared, 'train')
-    if train_ids.shape[0] != labels.shape[0] or len(users) != labels.shape[0]:
+    if row_count(prepared, 'train') != labels.shape[0] or len(users) != labels.shape[0]:
         raise ValueError('misaligned candidate inputs')
     scores = feature_ids(prepared, 'validation').sum(dim=1).numpy()
     return validation_output(prepared, scores)

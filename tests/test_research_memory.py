@@ -47,3 +47,24 @@ class ResearchMemoryTests(unittest.TestCase):
             self.assertTrue(memory.append_iteration(record, source_run="runs_new"))
             self.assertFalse(memory.append_iteration(record, source_run="runs_new"))
             self.assertEqual(memory.planner_summary()["recent_evidence"][0]["experiment_id"], "exp_001")
+
+    def test_best_accepted_champion_returns_reproducible_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old_run = root / "runs_autonomous_01"
+            _write_jsonl(old_run / "iterations.jsonl", [{
+                "experiment_id": "exp_003", "hypothesis": "gated FM", "rationale": "better",
+                "config": {"extension_name": "gated"}, "changed_factors": ["model"],
+                "decision": "accepted", "metrics": {"primary": 0.603}, "delta_primary": 0.002,
+            }])
+            source = old_run / "patches" / "exp_003.patch"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("def run_candidate(prepared, config, run_dir):\n    return None\n", encoding="utf-8")
+            memory = ResearchMemory(root)
+            memory.bootstrap(exclude_run=root / "runs_autonomous_02")
+
+            champion = memory.best_accepted_champion()
+
+            self.assertIsNotNone(champion)
+            self.assertEqual(champion["experiment_id"], "exp_003")
+            self.assertEqual(champion["primary"], 0.603)

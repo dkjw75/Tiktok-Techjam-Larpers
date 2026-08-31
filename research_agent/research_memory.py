@@ -111,6 +111,32 @@ class ResearchMemory:
             "policy": "This is evidence, not a forbidden-method list. Prefer a materially new hypothesis. A revisit of a repeatedly weak method needs an explicit rationale describing what is different.",
         }
 
+    def best_accepted_champion(self) -> dict[str, Any] | None:
+        """Return the strongest reproducible accepted experiment from prior runs."""
+        accepted = [
+            record for record in self.records()
+            if record.get("record_type") == "iteration"
+            and record.get("decision") == "accepted"
+            and isinstance(record.get("primary"), (int, float))
+        ]
+        if not accepted:
+            return None
+        champion = max(accepted, key=lambda item: float(item["primary"]))
+        source_run = str(champion["source_run"])
+        experiment_id = str(champion["experiment_id"])
+        source_path = self.workspace_root / source_run / "patches" / f"{experiment_id}.patch"
+        if not source_path.is_file():
+            return None
+        return {
+            "source_run": source_run,
+            "experiment_id": experiment_id,
+            "primary": float(champion["primary"]),
+            "hypothesis": str(champion.get("hypothesis", "")),
+            "rationale": str(champion.get("rationale", "")),
+            "config": dict(champion.get("config", {})),
+            "source_path": str(source_path),
+        }
+
     def _keys(self) -> set[str]:
         return {str(item.get("memory_key")) for item in self.records() if item.get("memory_key")}
 

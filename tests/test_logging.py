@@ -30,6 +30,7 @@ class LoggingTests(unittest.TestCase):
 
         self.assertEqual([event["action"] for event in events], ["training_started", "evaluation_started"])
         self.assertEqual(events[0]["experiment_id"], "exp_001")
+        self.assertTrue((self.store.root / "research_log.md").exists())
 
     def test_broad_hypotheses_are_separated_by_a_blank_jsonl_line(self):
         self.logger.log_action("training_started")

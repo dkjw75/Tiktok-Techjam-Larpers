@@ -35,11 +35,13 @@ class BroadAutonomousLoop:
         self.controller, self.logger, self.team = controller, logger, team
         self.fidelity = FidelityManager()
         self.research_memory = research_memory
+        self.imported_champion = research_memory.best_accepted_champion() if research_memory is not None else None
         self._screened_candidates: dict[str, tuple[Any, ExperimentProposal, CandidateCallable, str]] = {}
 
     def run(self, max_cycles: int) -> int:
         completed = 0
         self._run_trusted_parity_once()
+        self._reproduce_imported_champion_once()
         for _ in range(max_cycles):
             if self.controller.state.stopped:
                 break
@@ -123,10 +125,20 @@ class BroadAutonomousLoop:
             search_space={}, success_evidence="full-budget validation improvement over the incumbent",
             evaluation_budget={"low_epochs": 4, "full_epochs": 40, "patience": 4}, strategy="llm_isolated_candidate",
         )
+        promotion_status = self.fidelity.promotion_status(history)
         if not self.fidelity.should_promote(leader["metrics"], self.controller.state.current_best_primary, proposal=proposal, history=history, global_pool=True):
+            self.logger.log_action(
+                "autonomous_promotion_deferred",
+                experiment_id=leader["experiment_id"],
+                details={
+                    **promotion_status,
+                    "screen_primary": leader["metrics"]["primary"],
+                    "full_incumbent_primary": self.controller.state.current_best_primary,
+                },
+            )
             return None
         promoted = self.fidelity.promote(proposal, direction, experiment_id=self._next_experiment_id())
-        self.logger.log_action("autonomous_candidate_promoted", experiment_id=promoted.experiment_id, details={"parent_experiment_id": proposal.experiment_id, "area": plan.area})
+        self.logger.log_action("autonomous_candidate_promoted", experiment_id=promoted.experiment_id, details={"parent_experiment_id": proposal.experiment_id, "area": plan.area, **promotion_status})
         return self.controller.run_iteration(promoted, candidate, code_diff=source)
 
     def _run_trusted_parity_once(self) -> None:
@@ -160,11 +172,62 @@ class BroadAutonomousLoop:
         self.logger.log_action("trusted_pytorch_parity_started", experiment_id=experiment_id)
         self.controller.run_iteration(proposal, run_torch_fm_candidate, code_diff="trusted host runtime: research_agent/models/torch_fm.py")
 
+    def _reproduce_imported_champion_once(self) -> None:
+        """Make the best prior accepted candidate the verified incumbent of this run."""
+        champion = self.imported_champion
+        if champion is None or self.controller.state.current_best_experiment_id != "baseline":
+            return
+        source_path = str(champion["source_path"])
+        try:
+            source = open(source_path, encoding="utf-8").read()
+            experiment_id = self._next_experiment_id()
+            workspace = self.logger.store.root / "candidate_workspaces" / experiment_id
+            candidate = build_isolated_candidate(source, workspace)
+            config = dict(champion["config"])
+            config.update({"fidelity": "full", "confirmation_seeds": (0, 1, 2)})
+            proposal = ExperimentProposal(
+                experiment_id=experiment_id,
+                parent_experiment_id="baseline",
+                hypothesis=f"Reproduce prior accepted champion {champion['source_run']}/{champion['experiment_id']} before extending it.",
+                rationale=(
+                    "A fresh run verifies the strongest validation-selected prior candidate before using it "
+                    "as its incumbent; no test data or labels are exposed."
+                ),
+                config=config,
+                changed_factors=("imported_accepted_champion",),
+                model_family="fm",
+                research_direction_id="champion_reproduction",
+                search_strategy="imported_champion_reproduction",
+                search_region_id="region_imported_champion",
+            )
+            self.logger.log_action(
+                "prior_champion_import_started",
+                experiment_id=experiment_id,
+                details={
+                    "source_run": champion["source_run"],
+                    "source_experiment_id": champion["experiment_id"],
+                    "prior_validation_primary": champion["primary"],
+                    "source_path": source_path,
+                },
+            )
+            result = self.controller.run_iteration(proposal, candidate, code_diff=source)
+            self.logger.log_action(
+                "prior_champion_import_completed",
+                experiment_id=experiment_id,
+                details={"decision": result.decision, "current_best_experiment_id": self.controller.state.current_best_experiment_id},
+            )
+        except Exception as exc:
+            self.logger.log_action(
+                "prior_champion_import_failed",
+                details={"source_run": champion["source_run"], "source_experiment_id": champion["experiment_id"], "error": f"{type(exc).__name__}: {exc}"},
+            )
+
     def _propose_novel(self, history: list[Mapping[str, Any]]) -> tuple[Any | None, dict[str, Any]]:
         blocked = self._recent_proposal_memory()
         state = {
             **self.controller.state.as_dict(),
             "proposal_memory": blocked,
+            "imported_champion": self.imported_champion,
             "novelty_rule": "Do not repeat a blocked fingerprint, controlled change, or area unless new completed metric evidence directly justifies it.",
         }
         for attempt in range(3):

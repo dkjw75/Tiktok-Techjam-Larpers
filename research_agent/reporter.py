@@ -108,6 +108,16 @@ class MarkdownReporter:
             return [f"- Candidate verifier: {details.get('decision', 'unavailable')} — {details.get('rationale', '')}"]
         if action == "isolated_candidate_static_check_passed":
             return ["- Deterministic isolated-source safety check passed."]
+        if action == "prior_champion_import_started":
+            return [
+                "- Reproducing prior champion "
+                f"{details.get('source_run', 'unavailable')}/{details.get('source_experiment_id', 'unavailable')} "
+                "before extending it."
+            ]
+        if action == "prior_champion_import_completed":
+            return [f"- Prior-champion reproduction: {details.get('decision', 'unavailable')}."]
+        if action == "prior_champion_import_failed":
+            return [f"- Prior-champion reproduction failed: {details.get('error', 'unavailable')}"]
         if action == "isolated_candidate_synthetic_contract_completed":
             return ["- Synthetic typed-input preflight passed (including string user IDs)."]
         if action == "isolated_candidate_preflight_completed":
@@ -116,6 +126,12 @@ class MarkdownReporter:
             return [f"- Real-data candidate preflight failed: {details.get('error', 'unavailable')}"]
         if action == "isolated_candidate_rejected":
             return [f"- Candidate rejected before training: {details.get('reason', 'unavailable')}"]
+        if action == "autonomous_promotion_deferred":
+            return [
+                "- Full-budget promotion deferred: short-screen evidence is not yet reliable "
+                f"({details.get('policy', 'unavailable')}; "
+                f"comparison pairs: {details.get('calibration_pairs', 'unavailable')})."
+            ]
         if action == "candidate_recovery_decided":
             return [f"- Candidate recovery decision: {details.get('decision', 'unavailable')} — {details.get('rationale', '')}"]
         if action == "candidate_abandoned":

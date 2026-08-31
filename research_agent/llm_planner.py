@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
@@ -16,11 +17,17 @@ class LLMPlanningError(RuntimeError):
     """A planning failure must pause the run rather than fall back silently."""
 
 
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 180.0
+DEFAULT_MAX_RETRIES = 2
+
+
 @dataclass(frozen=True)
 class OpenAIResponsesClient:
     api_key: str
     model: str
     endpoint: str = "https://api.openai.com/v1/responses"
+    timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    max_retries: int = DEFAULT_MAX_RETRIES
 
     def create_json(self, instructions: str, prompt: str, *, schema: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
         schema = schema or {
@@ -46,19 +53,40 @@ class OpenAIResponsesClient:
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             method="POST",
         )
-        try:
-            with urlopen(request, timeout=60) as response:
-                raw = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:1000]
-            raise LLMPlanningError(f"OpenAI planning request failed: HTTP {exc.code}: {detail}") from exc
-        except (URLError, TimeoutError) as exc:
-            raise LLMPlanningError(f"OpenAI planning request failed: {exc}") from exc
+        retry_errors: list[str] = []
+        last_exception: Exception | None = None
+        attempts = self.max_retries + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                with urlopen(request, timeout=self.timeout_seconds) as response:
+                    raw = json.loads(response.read().decode("utf-8"))
+                break
+            except HTTPError as exc:
+                last_exception = exc
+                detail = exc.read().decode("utf-8", errors="replace")[:1000]
+                error = f"HTTP {exc.code}: {detail}"
+                retryable = exc.code == 408 or exc.code == 429 or 500 <= exc.code < 600
+            except (URLError, TimeoutError, OSError) as exc:
+                last_exception = exc
+                error = str(exc)
+                retryable = True
+            retry_errors.append(error)
+            if not retryable or attempt == attempts:
+                raise LLMPlanningError(
+                    f"OpenAI planning request failed after {attempt} attempt(s): {error}"
+                ) from last_exception
+            time.sleep(min(2 ** (attempt - 1), 4))
         text = raw.get("output_text") or _extract_output_text(raw)
         if not isinstance(text, str):
             raise LLMPlanningError("OpenAI response did not include output_text")
         try:
-            return json.loads(text), {"model": self.model, "usage": raw.get("usage", {}), "response_id": raw.get("id")}
+            return json.loads(text), {
+                "model": self.model,
+                "usage": raw.get("usage", {}),
+                "response_id": raw.get("id"),
+                "request_attempts": attempt,
+                "transient_request_errors": retry_errors,
+            }
         except json.JSONDecodeError as exc:
             raise LLMPlanningError("OpenAI response was not valid structured JSON") from exc
 
@@ -86,7 +114,14 @@ class OpenAIPlanner:
         model = os.environ.get("OPENAI_MODEL", "gpt-5").strip()
         if not key:
             raise LLMPlanningError("OPENAI_API_KEY is not set; add it to .env before starting the LLM agent")
-        return cls(OpenAIResponsesClient(api_key=key, model=model))
+        try:
+            timeout_seconds = float(os.environ.get("OPENAI_REQUEST_TIMEOUT_SECONDS", str(DEFAULT_REQUEST_TIMEOUT_SECONDS)))
+            max_retries = int(os.environ.get("OPENAI_REQUEST_MAX_RETRIES", str(DEFAULT_MAX_RETRIES)))
+        except ValueError as exc:
+            raise LLMPlanningError("OPENAI_REQUEST_TIMEOUT_SECONDS must be a number and OPENAI_REQUEST_MAX_RETRIES must be an integer") from exc
+        if timeout_seconds <= 0 or max_retries < 0:
+            raise LLMPlanningError("OPENAI_REQUEST_TIMEOUT_SECONDS must be positive and OPENAI_REQUEST_MAX_RETRIES cannot be negative")
+        return cls(OpenAIResponsesClient(api_key=key, model=model, timeout_seconds=timeout_seconds, max_retries=max_retries))
 
     def propose(self, history: Sequence[Mapping[str, Any]], state: ResearchState) -> ResearchDirection:
         response, metadata = self.client.create_json(_instructions(), _prompt(history, state))

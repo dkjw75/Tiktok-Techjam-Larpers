@@ -28,6 +28,8 @@ The research agent uses an OpenAI model to generate the high-level hypothesis an
 .\.venv\Scripts\python.exe -m research_agent.run_research --artifact-dir runs/runs_llm
 ```
 
+LLM requests wait up to 180 seconds by default and retry temporary failures twice. You can adjust `OPENAI_REQUEST_TIMEOUT_SECONDS` and `OPENAI_REQUEST_MAX_RETRIES` in `.env`; the defaults are appropriate for the larger autonomous-research prompts.
+
 It selects experiments using validation only. It stops successfully at validation primary `0.65`, requests an LLM-guided new research direction after three non-improving iterations, and has a hard cap of 20 experiments.
 
 The LLM planner, critic, coding, and review roles are documented against the architecture in `docs/agent-architecture-conformance.md`.
