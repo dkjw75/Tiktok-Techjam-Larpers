@@ -22,6 +22,7 @@ import numpy as np
 from ..metrics import evaluate_predictions
 from ..runner import CandidateOutput, PreparedData
 from .ensemble_checkpoint import (
+    EnsembleCheckpoint,
     load_ensemble_checkpoint,
     write_ensemble_checkpoint,
 )
@@ -846,6 +847,14 @@ def predict_ensemble_checkpoint(
 ) -> CandidateOutput:
     """Run inference from fitted member parameters; no optimizer is constructed."""
     checkpoint = load_ensemble_checkpoint(checkpoint_path)
+    return predict_loaded_ensemble_checkpoint(prepared, checkpoint)
+
+
+def predict_loaded_ensemble_checkpoint(
+    prepared: PreparedData,
+    checkpoint: EnsembleCheckpoint,
+) -> CandidateOutput:
+    """Infer from a validated in-memory bundle without reopening its path."""
     target_rows = list(
         prepared.prediction_rows
         if prepared.prediction_rows is not None

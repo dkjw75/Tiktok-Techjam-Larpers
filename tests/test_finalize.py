@@ -6,6 +6,7 @@ import os
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from research_agent.contracts import BENCHMARK_CONTRACT
@@ -14,8 +15,10 @@ from research_agent.finalize import (
     _completed_result,
     _acquire_finalization_lock,
     _finalization_fingerprint,
+    _load_certified_selected_checkpoint,
     _require_finalizable,
     _selected_iteration,
+    _write_selected_ensemble_submission,
     finalize_run,
 )
 from research_agent.manifest import ensure_run_manifest
@@ -24,6 +27,129 @@ from research_agent.store import ArtifactStore
 
 
 class FinalizationTests(unittest.TestCase):
+    def test_final_inference_uses_loaded_bundle_without_reopening_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "submission.csv"
+            loaded = object()
+            output = SimpleNamespace(
+                user_ids=[1],
+                labels=[0.0],
+                scores=[0.25],
+            )
+            rows = {BENCHMARK_CONTRACT.test_split: [{"user_id": "1"}]}
+            metric = SimpleNamespace(as_dict=lambda: {"primary": 0.5})
+            with (
+                patch("research_agent.finalize._load_finalization_rows", return_value=rows),
+                patch(
+                    "research_agent.models.ensemble_fm.predict_loaded_ensemble_checkpoint",
+                    return_value=output,
+                ) as predict,
+                patch("research_agent.metrics.evaluate_predictions", return_value=metric),
+                patch("submit.write_submission"),
+                patch(
+                    "research_agent.finalize._resolve_bundle",
+                    side_effect=AssertionError("mutable path reopened"),
+                ),
+            ):
+                result = _write_selected_ensemble_submission(
+                    target,
+                    {"runner_metadata": {"checkpoint_schema_version": 2}},
+                    BENCHMARK_CONTRACT,
+                    expected_checkpoint_sha256="a" * 64,
+                    loaded_checkpoint=loaded,
+                )
+            self.assertEqual(result, {"primary": 0.5})
+            predict.assert_called_once()
+            self.assertIs(predict.call_args.args[1], loaded)
+
+    def test_transaction_lock_precedes_all_authorizing_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ArtifactStore(directory)
+            store.write_root_json(
+                "state.json",
+                ResearchState(
+                    stop_reason_code="iteration_budget",
+                    stop_reason="focused scope completed",
+                ).as_dict(),
+            )
+            ensure_run_manifest(store, BENCHMARK_CONTRACT, create=True)
+            order: list[str] = []
+            result = FinalizationResult(
+                selected_experiment_id="baseline",
+                selection_primary=0.6016,
+                submission_path=store.root / "final_submission.csv",
+                submission_checked=True,
+                test_metrics=None,
+                report_path=store.root / "research_log.md",
+            )
+            real_acquire = _acquire_finalization_lock
+
+            def acquire(path):
+                order.append("lock")
+                return real_acquire(path)
+
+            def require(*_args, **_kwargs):
+                order.append("certificate")
+                return None
+
+            def fingerprint(*_args, **_kwargs):
+                order.append("fingerprint")
+                return "f" * 64
+
+            def preflight(*_args, **_kwargs):
+                order.append("preflight")
+                return None
+
+            def execute(*_args, **_kwargs):
+                order.append("boundary")
+                return result
+
+            with (
+                patch("research_agent.finalize._acquire_finalization_lock", side_effect=acquire),
+                patch("research_agent.finalize._require_finalizable", side_effect=require),
+                patch("research_agent.finalize._finalization_fingerprint", side_effect=fingerprint),
+                patch("research_agent.finalize._preflight_selected_checkpoint", side_effect=preflight),
+                patch("research_agent.finalize._execute_finalization", side_effect=execute),
+            ):
+                actual = finalize_run(store, confirm_final_evaluation=True)
+
+            self.assertIs(actual, result)
+            self.assertEqual(
+                order,
+                ["lock", "certificate", "fingerprint", "preflight", "boundary"],
+            )
+
+    def test_bundle_change_after_preflight_is_rejected_before_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ArtifactStore(directory)
+            checkpoint = store.runs_dir / "exp_001" / "checkpoint.npz"
+            checkpoint.parent.mkdir(parents=True)
+            checkpoint.write_bytes(b"certified")
+            digest = hashlib.sha256(b"certified").hexdigest()
+            store.write_root_json(
+                "seed_confirmation.json",
+                {
+                    "submission_checkpoint_path": str(checkpoint),
+                    "submission_bundle": {
+                        "sha256": digest,
+                        "size_bytes": len(b"certified"),
+                        "schema_version": 2,
+                    }
+                },
+            )
+            selected = {
+                "runner_metadata": {
+                    "checkpoint_path": str(checkpoint),
+                    "checkpoint_schema_version": 2,
+                }
+            }
+            checkpoint.write_bytes(b"substitute")
+            with self.assertRaisesRegex(RuntimeError, "bundle (size|content) changed"):
+                _load_certified_selected_checkpoint(
+                    store,
+                    selected,
+                )
+
     def test_validation_preflight_runs_before_boundary_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ArtifactStore(directory)
@@ -43,7 +169,7 @@ class FinalizationTests(unittest.TestCase):
                 report_path=store.root / "research_log.md",
             )
 
-            def preflight(_selected, _contract):
+            def preflight(_selected, _contract, **_kwargs):
                 order.append("preflight")
                 return None
 
@@ -85,22 +211,25 @@ class FinalizationTests(unittest.TestCase):
             assert certificate is not None
             self.assertEqual(certificate["status"], "failed_before_test_boundary")
 
-    def test_stale_partial_finalization_lock_fails_closed(self) -> None:
+    def test_stale_empty_finalization_lock_is_recovered_under_guard(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             lock = Path(directory) / ".finalization.lock"
             lock.write_bytes(b"")
             stale = time.time() - 60
             os.utime(lock, (stale, stale))
-            with self.assertRaisesRegex(RuntimeError, "owner cannot be verified"):
-                _acquire_finalization_lock(lock)
+            _acquire_finalization_lock(lock)
+            payload = __import__("json").loads(lock.read_text(encoding="utf-8"))
+            self.assertEqual(payload["pid"], os.getpid())
             lock.unlink()
 
-    def test_fresh_partial_finalization_lock_fails_closed(self) -> None:
+    def test_fresh_empty_finalization_lock_is_recovered_under_guard(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             lock = Path(directory) / ".finalization.lock"
             lock.write_bytes(b"")
-            with self.assertRaisesRegex(RuntimeError, "owner cannot be verified"):
-                _acquire_finalization_lock(lock)
+            _acquire_finalization_lock(lock)
+            payload = __import__("json").loads(lock.read_text(encoding="utf-8"))
+            self.assertEqual(payload["pid"], os.getpid())
+            lock.unlink()
 
     def test_old_lock_owned_by_live_process_is_never_stolen(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

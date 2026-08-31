@@ -24,3 +24,32 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(direction.direction_id, "listwise_fm_ranking")
         self.assertIn("Recent decisions", direction.rationale)
         self.assertEqual(direction.strategy, "exploration")
+
+    def test_exploit_review_refines_latest_evidenced_direction(self):
+        history = [
+            {"direction_id": "rank_ensemble", "decision": "accepted"},
+            {
+                "record_type": "evidence_review",
+                "evidence_review": {
+                    "allocation_status": "EXPLOIT",
+                    "rationale": "matched seeds accepted",
+                },
+            },
+        ]
+        direction = EvidencePlanner(seed=0).propose(history, ResearchState())
+        self.assertEqual(direction.direction_id, "rank_ensemble")
+        self.assertIn("EXPLOIT", direction.rationale)
+
+    def test_abandon_review_chooses_a_different_direction(self):
+        history = [
+            {"direction_id": "rank_ensemble", "decision": "rejected"},
+            {
+                "record_type": "evidence_review",
+                "evidence_review": {
+                    "allocation_status": "ABANDON",
+                    "rationale": "three negatives",
+                },
+            },
+        ]
+        direction = EvidencePlanner(seed=0).propose(history, ResearchState())
+        self.assertEqual(direction.direction_id, "listwise_fm_ranking")

@@ -200,6 +200,12 @@ class ResilientPlanner:
 
 
 _APPROVED_DIRECTIONS: Mapping[str, Mapping[str, Any]] = {
+    "rank_ensemble": {
+        "search_space": {
+            "loss": ["ensemble"],
+            "member_set": ["core4", "core5", "core6"],
+        }
+    },
     "listwise_fm_ranking": {
         "search_space": {
             "loss": ["listwise"],
@@ -230,9 +236,20 @@ def _instructions() -> str:
 
 
 def _prompt(history: Sequence[Mapping[str, Any]], state: ResearchState) -> str:
+    evidence_review = next(
+        (
+            item.get("evidence_review")
+            for item in reversed(history)
+            if item.get("record_type") == "evidence_review"
+        ),
+        None,
+    )
+    experiment_history = [
+        item for item in history if item.get("record_type") != "evidence_review"
+    ]
     compact = [
         {key: item.get(key) for key in ("experiment_id", "hypothesis", "direction_id", "metrics", "decision", "error")}
-        for item in history[-8:]
+        for item in experiment_history[-8:]
     ]
     return json.dumps(
         {
@@ -240,6 +257,7 @@ def _prompt(history: Sequence[Mapping[str, Any]], state: ResearchState) -> str:
             "state": state.as_dict(),
             "approved_directions": list(_APPROVED_DIRECTIONS),
             "recent_evidence": compact,
+            "structured_evidence_review": evidence_review,
             "request": "Choose exactly one approved direction and explain a distinct, evidence-based hypothesis.",
         },
         sort_keys=True,

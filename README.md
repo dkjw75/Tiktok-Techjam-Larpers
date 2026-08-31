@@ -39,6 +39,23 @@ The agent selects with validation only. There is no score target. A full candida
 
 Worker processes receive a staged train/validation-only artifact rather than the raw dataset path. Run attempts, retries, configuration lineage, metrics, LLM usage, seed certificates and state transitions are persisted under the artifact directory.
 
+The append-only JSON/JSONL evidence remains authoritative. After every state
+checkpoint the agent also regenerates three compatibility views requested by
+the autonomous research protocol:
+
+- `research_state.json` — champion, separate contract/calibrated baseline
+  evidence, active hypothesis, region allocation, budget and stop state.
+- `experiment_ledger.csv` — one row per experiment with resolved seed decision,
+  configuration, separate metric deltas, variance and artifact paths.
+- `research_lessons.md` — deterministic per-experiment reflection that retains
+  failed and negative results.
+
+The loop prints the required cycle summary after each completed cycle. These
+views never replace `state.json`, `iterations.jsonl`, or promotion certificates.
+For non-baseline incumbents it also evaluates `E` versus `E + candidate` on a
+deterministic, user-disjoint validation fit/held partition; alpha is selected
+on fit users only, while held-user delta and partition use are persisted.
+
 Test access is a separate, explicit, idempotent transaction:
 
 ```powershell

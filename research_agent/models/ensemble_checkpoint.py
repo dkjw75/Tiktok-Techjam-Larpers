@@ -7,6 +7,7 @@ loading fails closed if the archive and manifest do not agree exactly.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import tempfile
@@ -521,8 +522,21 @@ def _verify_archive_array(
 
 def load_ensemble_checkpoint(path: Path) -> EnsembleCheckpoint:
     """Load and fully validate a checkpoint with pickle disabled."""
+    return _load_ensemble_checkpoint_source(path, Path(path))
+
+
+def load_ensemble_checkpoint_bytes(
+    content: bytes,
+    *,
+    source_path: Path,
+) -> EnsembleCheckpoint:
+    """Validate an immutable byte snapshot without reopening its source path."""
+    return _load_ensemble_checkpoint_source(io.BytesIO(content), Path(source_path))
+
+
+def _load_ensemble_checkpoint_source(source: Any, source_path: Path) -> EnsembleCheckpoint:
     try:
-        with np.load(path, allow_pickle=False) as archive:
+        with np.load(source, allow_pickle=False) as archive:
             if _MANIFEST_KEY not in archive.files or _WEIGHTS_KEY not in archive.files:
                 raise ValueError("ensemble checkpoint is missing its manifest or weights")
             manifest = _manifest_from_array(archive[_MANIFEST_KEY])
@@ -585,4 +599,10 @@ def load_ensemble_checkpoint(path: Path) -> EnsembleCheckpoint:
 
     names = manifest["active_members"]
     _validate_weights(weights, len(names))
-    return EnsembleCheckpoint(path, dict(manifest), weights.copy(), tuple(states), tuple(encoders))
+    return EnsembleCheckpoint(
+        source_path,
+        dict(manifest),
+        weights.copy(),
+        tuple(states),
+        tuple(encoders),
+    )

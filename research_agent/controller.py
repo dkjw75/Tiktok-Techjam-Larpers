@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
 import re
 import time
@@ -9,9 +10,18 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .contracts import BENCHMARK_CONTRACT, BenchmarkContract, ComparisonValidity
+from .complementarity import (
+    ComplementarityValidationError,
+    evaluate_complementarity,
+)
 from .logger import ResearchLogger
 from .metrics import MetricsValidationError, evaluate_predictions
-from .runner import CandidateCallable, ExperimentRunner, RunnerResult
+from .runner import (
+    CandidateCallable,
+    ExperimentRunner,
+    RunnerResult,
+    load_completed_candidate_output,
+)
 from .safety import ExperimentProposal, SafetyReport, SafetyValidator
 from .state import ResearchState
 
@@ -213,8 +223,15 @@ class ExperimentController:
                 parent_experiment_id=parent_experiment_id,
             )
 
-        self._historical_configs.append(proposal.config)
         incumbent_id = proposal.comparison_incumbent_id or parent_experiment_id
+        self._attach_complementarity_evidence(
+            proposal.experiment_id,
+            proposal.selection_split,
+            incumbent_id,
+            proposal.config,
+            runner_result,
+        )
+        self._historical_configs.append(proposal.config)
         incumbent_metadata, incumbent_config = self._incumbent_evidence(
             incumbent_id,
             proposal.config,
@@ -301,6 +318,146 @@ class ExperimentController:
             parent_experiment_id=parent_experiment_id,
             comparison_validity=comparison,
         )
+
+    def _attach_complementarity_evidence(
+        self,
+        experiment_id: str,
+        selection_split: str,
+        incumbent_id: str,
+        config: Mapping[str, Any],
+        runner_result: RunnerResult,
+    ) -> None:
+        """Attach deterministic E-vs-E+candidate validation evidence when possible."""
+        output = runner_result.output
+        if config.get("fidelity") != "full" or config.get("calibration_only") is True:
+            self.logger.log_action(
+                "complementarity_deferred",
+                experiment_id=experiment_id,
+                details={
+                    "reason": "held-user complementarity is reserved for a full-fidelity non-calibration candidate"
+                },
+            )
+            return
+        if output is None or incumbent_id == "baseline":
+            self.logger.log_action(
+                "complementarity_unavailable",
+                experiment_id=experiment_id,
+                details={"reason": "incumbent prediction vector is unavailable"},
+            )
+            return
+        try:
+            uses = self.logger.store.read_root_json("complementarity_uses.json") or {}
+            existing = uses.get(experiment_id)
+            if isinstance(existing, Mapping):
+                if existing.get("incumbent_experiment_id") != incumbent_id:
+                    raise ComplementarityValidationError(
+                        "recorded complementarity incumbent does not match replay"
+                    )
+                evidence = dict(existing)
+                if not isinstance(output.metadata, dict):
+                    raise ComplementarityValidationError(
+                        "candidate metadata cannot replay complementarity evidence"
+                    )
+                output.metadata["complementarity"] = evidence
+                output.metadata["ensemble_delta_if_added"] = evidence.get(
+                    "ensemble_delta_if_added"
+                )
+                output.metadata["complementarity_partition_fingerprint"] = (
+                    evidence.get("partition_fingerprint")
+                )
+                self.logger.log_action(
+                    "complementarity_evidence_reused",
+                    experiment_id=experiment_id,
+                    details=evidence,
+                )
+                return
+            spent = [
+                item
+                for item in uses.values()
+                if isinstance(item, Mapping)
+                and item.get("selection_eligible") is True
+            ]
+            if spent:
+                reason = (
+                    "held-user complementarity partition is globally spent for "
+                    "adaptive model selection in this research run"
+                )
+                if isinstance(output.metadata, dict):
+                    output.metadata["complementarity_error"] = reason
+                self.logger.log_action(
+                    "complementarity_unavailable",
+                    experiment_id=experiment_id,
+                    details={"reason": reason, "prior_uses": len(spent)},
+                )
+                return
+            incumbent = load_completed_candidate_output(self.logger.store, incumbent_id)
+            if list(incumbent.user_ids) != list(output.user_ids):
+                raise ComplementarityValidationError(
+                    "incumbent and candidate user rows are not aligned"
+                )
+            if list(incumbent.labels) != list(output.labels):
+                raise ComplementarityValidationError(
+                    "incumbent and candidate validation labels are not aligned"
+                )
+            partition = self.logger.store.read_root_json(
+                "complementarity_partition.json"
+            ) or {}
+            expected = partition.get("partition_fingerprint")
+            result = evaluate_complementarity(
+                output.user_ids,
+                output.labels,
+                incumbent.scores,
+                output.scores,
+                split=selection_split,
+                expected_partition_fingerprint=(
+                    str(expected) if isinstance(expected, str) else None
+                ),
+            )
+            evidence = result.as_dict()
+            evidence["incumbent_experiment_id"] = incumbent_id
+            evidence["selection_eligible"] = True
+            evidence["use_status"] = "spent_for_model_selection"
+            if not partition:
+                self.logger.store.write_root_json(
+                    "complementarity_partition.json",
+                    {
+                        "partition_fingerprint": result.partition_fingerprint,
+                        "selection_split": selection_split,
+                        "fit_users": result.fit_users,
+                        "held_users": result.held_users,
+                    },
+                )
+            # CandidateOutput is frozen, but production metadata is deliberately
+            # a mutable dict assembled by the runner.  Keep detailed evidence
+            # together and project the two fields consumed by the ledger/review.
+            if not isinstance(output.metadata, dict):
+                raise ComplementarityValidationError(
+                    "candidate metadata cannot record complementarity evidence"
+                )
+            output.metadata["complementarity"] = evidence
+            output.metadata["ensemble_delta_if_added"] = (
+                result.ensemble_delta_if_added
+            )
+            output.metadata["complementarity_partition_fingerprint"] = (
+                result.partition_fingerprint
+            )
+            uses[experiment_id] = evidence
+            self.logger.store.write_root_json("complementarity_uses.json", uses)
+            self.logger.log_action(
+                "complementarity_evaluated",
+                experiment_id=experiment_id,
+                details=evidence,
+            )
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            if isinstance(output.metadata, dict):
+                output.metadata["complementarity_error"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
+            self.logger.log_action(
+                "complementarity_unavailable",
+                experiment_id=experiment_id,
+                details={"reason": f"{type(exc).__name__}: {exc}"},
+            )
 
     def resolve_seed_confirmation(
         self,
@@ -737,6 +894,21 @@ class ExperimentController:
 
     def _persist_state(self) -> None:
         self.logger.store.write_root_json("state.json", self.state.as_dict())
+        try:
+            from .research_memory import ResearchMemoryProjector
+
+            ResearchMemoryProjector(
+                self.logger.store,
+                contract=self.contract,
+            ).write_all()
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            # Compatibility views are recoverable projections.  A disk or
+            # legacy-evidence problem must not make an already-committed
+            # authoritative state transition look as though it never happened.
+            self.logger.log_action(
+                "research_memory_projection_failed",
+                details={"error": f"{type(exc).__name__}: {exc}"},
+            )
 
     def _state_snapshot(self) -> ResearchState:
         return ResearchState.from_dict(self.state.as_dict())

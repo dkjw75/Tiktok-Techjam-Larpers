@@ -45,60 +45,58 @@ def finalize_run(
 
     Test rows enter only here, after validation-based selection is complete.
     """
-    manifest = ensure_run_manifest(store, contract, create=False)
-    persisted = store.read_root_json("state.json") or {}
-    state = ResearchState.from_dict(persisted)
-    selected = _require_finalizable(
-        store,
-        state,
-        confirm_final_evaluation=confirm_final_evaluation,
-    )
-    target = Path(submission_path) if submission_path else store.root / "final_submission.csv"
-    fingerprint = _finalization_fingerprint(
-        store,
-        state,
-        selected,
-        target,
-        contract,
-        manifest=manifest,
-    )
-    completed = store.read_root_json("finalization.json")
-    if completed and completed.get("status") == "completed":
-        if completed.get("fingerprint") != fingerprint:
-            raise RuntimeError("run was already finalized with different immutable inputs")
-        return _completed_result(completed)
-    recovery_evidence = None
-    if completed and completed.get("status") == "recovery_authorized":
-        recovery_evidence = _validate_recovery_authorization(
-            store, completed, fingerprint
-        )
-    elif completed and completed.get("status") in {
-        "test_access_started",
-        "failed_after_test_boundary",
-    }:
-        raise RuntimeError(
-            "previous finalization did not commit a completed certificate; "
-            "test access is fail-closed and will not be repeated automatically"
-        )
-    elif completed and completed.get("status") not in {
-        "failed_before_test_boundary",
-    }:
-        raise RuntimeError(
-            "finalization has an unresolved or unknown transaction status: "
-            f"{completed.get('status')!r}"
-        )
     store.initialize()
     lock_path = store.root / ".finalization.lock"
-    descriptor = _acquire_finalization_lock(lock_path)
+    _acquire_finalization_lock(lock_path)
+    target = Path(submission_path) if submission_path else store.root / "final_submission.csv"
+    fingerprint: str | None = None
+    recovery_evidence: dict[str, str] | None = None
+    transaction_started = False
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(
-                {"pid": os.getpid(), "created_at_epoch_seconds": time.time()},
-                handle,
-                sort_keys=True,
+        # Every mutable read that authorizes the one-way test boundary is
+        # serialized by the same process lock.  In particular, the bundle
+        # cannot be swapped by another cooperating finalizer between
+        # certificate verification and inference.
+        manifest = ensure_run_manifest(store, contract, create=False)
+        persisted = store.read_root_json("state.json") or {}
+        state = ResearchState.from_dict(persisted)
+        selected = _require_finalizable(
+            store,
+            state,
+            confirm_final_evaluation=confirm_final_evaluation,
+        )
+        fingerprint = _finalization_fingerprint(
+            store,
+            state,
+            selected,
+            target,
+            contract,
+            manifest=manifest,
+        )
+        completed = store.read_root_json("finalization.json")
+        if completed and completed.get("status") == "completed":
+            if completed.get("fingerprint") != fingerprint:
+                raise RuntimeError("run was already finalized with different immutable inputs")
+            return _completed_result(completed)
+        if completed and completed.get("status") == "recovery_authorized":
+            recovery_evidence = _validate_recovery_authorization(
+                store, completed, fingerprint
             )
-            handle.flush()
-            os.fsync(handle.fileno())
+        elif completed and completed.get("status") in {
+            "test_access_started",
+            "failed_after_test_boundary",
+        }:
+            raise RuntimeError(
+                "previous finalization did not commit a completed certificate; "
+                "test access is fail-closed and will not be repeated automatically"
+            )
+        elif completed and completed.get("status") not in {
+            "failed_before_test_boundary",
+        }:
+            raise RuntimeError(
+                "finalization has an unresolved or unknown transaction status: "
+                f"{completed.get('status')!r}"
+            )
         running_payload: dict[str, Any] = {
             "status": "running",
             "fingerprint": fingerprint,
@@ -110,7 +108,17 @@ def finalize_run(
             "finalization.json",
             running_payload,
         )
-        preflight_evidence = _preflight_selected_checkpoint(selected, contract)
+        transaction_started = True
+        loaded_checkpoint, expected_checkpoint_sha256 = _load_certified_selected_checkpoint(
+            store,
+            selected,
+        )
+        preflight_evidence = _preflight_selected_checkpoint(
+            selected,
+            contract,
+            loaded_checkpoint=loaded_checkpoint,
+            checkpoint_sha256=expected_checkpoint_sha256,
+        )
         return _execute_finalization(
             store,
             state,
@@ -120,26 +128,29 @@ def finalize_run(
             fingerprint,
             preflight_evidence=preflight_evidence,
             recovery_evidence=recovery_evidence,
+            expected_checkpoint_sha256=expected_checkpoint_sha256,
+            loaded_checkpoint=loaded_checkpoint,
         )
     except BaseException as exc:
-        current = store.read_root_json("finalization.json") or {}
-        crossed_test_boundary = current.get("status") == "test_access_started"
-        failure_payload: dict[str, Any] = {
-            "status": (
-                "failed_after_test_boundary"
-                if crossed_test_boundary
-                else "failed_before_test_boundary"
-            ),
-            "fingerprint": fingerprint,
-            "submission_target": str(target.resolve()),
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-        if recovery_evidence is not None:
-            failure_payload["recovery_evidence"] = recovery_evidence
-        store.write_root_json(
-            "finalization.json",
-            failure_payload,
-        )
+        if transaction_started:
+            current = store.read_root_json("finalization.json") or {}
+            crossed_test_boundary = current.get("status") == "test_access_started"
+            failure_payload: dict[str, Any] = {
+                "status": (
+                    "failed_after_test_boundary"
+                    if crossed_test_boundary
+                    else "failed_before_test_boundary"
+                ),
+                "fingerprint": fingerprint,
+                "submission_target": str(target.resolve()),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            if recovery_evidence is not None:
+                failure_payload["recovery_evidence"] = recovery_evidence
+            store.write_root_json(
+                "finalization.json",
+                failure_payload,
+            )
         raise
     finally:
         lock_path.unlink(missing_ok=True)
@@ -155,6 +166,8 @@ def _execute_finalization(
     *,
     preflight_evidence: dict[str, Any] | None,
     recovery_evidence: dict[str, str] | None,
+    expected_checkpoint_sha256: str | None,
+    loaded_checkpoint: Any | None,
 ) -> FinalizationResult:
     target.parent.mkdir(parents=True, exist_ok=True)
     boundary_payload: dict[str, Any] = {
@@ -174,12 +187,16 @@ def _execute_finalization(
         test_metrics = None
     else:
         model = (selected.get("runner_metadata") or {}).get("model")
-        writer = (
-            _write_selected_ensemble_submission
-            if model == "fm_rank_ensemble"
-            else _write_selected_torch_submission
-        )
-        test_metrics = writer(target, selected, contract)
+        if model == "fm_rank_ensemble":
+            test_metrics = _write_selected_ensemble_submission(
+                target,
+                selected,
+                contract,
+                expected_checkpoint_sha256=expected_checkpoint_sha256,
+                loaded_checkpoint=loaded_checkpoint,
+            )
+        else:
+            test_metrics = _write_selected_torch_submission(target, selected, contract)
     from data import load
     from submit import read_submission
 
@@ -388,7 +405,13 @@ def _finalization_fingerprint(
                 "selected candidate model code changed after certification: "
                 f"expected {expected_model_code}, got {current_model_code}"
             )
-        checkpoint = Path(str(selected.get("runner_metadata", {}).get("checkpoint_path", "")))
+        confirmation = store.read_root_json("seed_confirmation.json") or {}
+        checkpoint = Path(
+            str(
+                confirmation.get("submission_checkpoint_path")
+                or selected.get("runner_metadata", {}).get("checkpoint_path", "")
+            )
+        )
         if not checkpoint.is_file():
             raise FileNotFoundError(f"selected checkpoint is unavailable: {checkpoint}")
         checkpoint_sha256 = _file_sha256(checkpoint)
@@ -423,24 +446,65 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _acquire_finalization_lock(lock_path: Path) -> int:
-    """Acquire a process-owned lock, recovering one left by a dead process."""
-    for _attempt in range(2):
+def _acquire_finalization_lock(lock_path: Path) -> None:
+    """Atomically create a complete PID lock under an OS-backed guard."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    guard_path = lock_path.with_name(f"{lock_path.name}.guard")
+    with guard_path.open("a+b") as guard:
+        guard.seek(0, os.SEEK_END)
+        if guard.tell() == 0:
+            guard.write(b"\0")
+            guard.flush()
+            os.fsync(guard.fileno())
+        guard.seek(0)
+        if os.name != "nt":  # pragma: no cover - Windows is the competition host.
+            raise RuntimeError("finalization locking requires the Windows host")
+        import msvcrt
+
         try:
-            return os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError as exc:
-            try:
-                raw = lock_path.read_text(encoding="utf-8").strip()
-                value = json.loads(raw)
-                owner_pid = int(value["pid"] if isinstance(value, dict) else value)
-            except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-                raise RuntimeError(
-                    "finalization lock owner cannot be verified; refusing to guess"
-                ) from exc
-            if ArtifactStore._pid_is_running(owner_pid):
-                raise RuntimeError("another finalization transaction is active") from exc
-            lock_path.unlink(missing_ok=True)
-    raise RuntimeError("could not recover the finalization transaction lock")
+            msvcrt.locking(guard.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            raise RuntimeError("lock arbitration is already active") from exc
+
+        def unlock() -> None:
+            msvcrt.locking(guard.fileno(), msvcrt.LK_UNLCK, 1)
+        try:
+            for _attempt in range(2):
+                try:
+                    descriptor = os.open(
+                        lock_path,
+                        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    )
+                    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                        json.dump(
+                            {
+                                "pid": os.getpid(),
+                                "created_at_epoch_seconds": time.time(),
+                            },
+                            handle,
+                            sort_keys=True,
+                        )
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    return
+                except FileExistsError as exc:
+                    try:
+                        raw = lock_path.read_text(encoding="utf-8").strip()
+                        if not raw:
+                            lock_path.unlink(missing_ok=True)
+                            continue
+                        value = json.loads(raw)
+                        owner_pid = int(value["pid"] if isinstance(value, dict) else value)
+                    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+                        raise RuntimeError(
+                            "finalization lock owner cannot be verified; refusing to guess"
+                        ) from exc
+                    if ArtifactStore._pid_is_running(owner_pid):
+                        raise RuntimeError("another finalization transaction is active") from exc
+                    lock_path.unlink(missing_ok=True)
+            raise RuntimeError("could not recover the finalization transaction lock")
+        finally:
+            unlock()
 
 
 def _require_finalizable(
@@ -568,6 +632,9 @@ def _selected_iteration(store: ArtifactStore, experiment_id: str) -> dict[str, A
 def _preflight_selected_checkpoint(
     selected: dict[str, Any] | None,
     contract: BenchmarkContract,
+    *,
+    loaded_checkpoint: Any | None = None,
+    checkpoint_sha256: str | None = None,
 ) -> dict[str, Any] | None:
     """Replay the certified validation output before test access is recorded.
 
@@ -585,11 +652,15 @@ def _preflight_selected_checkpoint(
     from .data_boundary import load_research_splits
     from .metrics import evaluate_predictions
     from .models.ensemble_checkpoint import load_ensemble_checkpoint
-    from .models.ensemble_fm import predict_ensemble_checkpoint
+    from .models.ensemble_fm import predict_loaded_ensemble_checkpoint
     from .runner import PreparedData
 
-    checkpoint_path = _resolve_bundle(metadata, selected)
-    checkpoint = load_ensemble_checkpoint(checkpoint_path)
+    if loaded_checkpoint is None:
+        checkpoint_path = _resolve_bundle(metadata, selected)
+        checkpoint = load_ensemble_checkpoint(checkpoint_path)
+    else:
+        checkpoint = loaded_checkpoint
+        checkpoint_path = Path(checkpoint.path)
     expected_hash = metadata.get("validation_score_sha256")
     if not isinstance(expected_hash, str) or not expected_hash:
         raise RuntimeError("selected experiment records no validation score hash")
@@ -600,9 +671,9 @@ def _preflight_selected_checkpoint(
         contract.data_dir,
         (contract.validation_split,),
     )[contract.validation_split]
-    replay = predict_ensemble_checkpoint(
+    replay = predict_loaded_ensemble_checkpoint(
         PreparedData((), rows),
-        checkpoint_path,
+        checkpoint,
     )
     actual_hash = _score_vector_sha256(replay.scores)
     if actual_hash != expected_hash:
@@ -632,12 +703,49 @@ def _preflight_selected_checkpoint(
         )
     return {
         "model": "fm_rank_ensemble",
-        "checkpoint_sha256": _file_sha256(checkpoint_path),
+        "checkpoint_sha256": checkpoint_sha256 or _file_sha256(checkpoint_path),
         "validation_rows": len(rows),
         "validation_score_sha256": actual_hash,
         "validation_primary": replay_primary,
         "test_materialized": False,
     }
+
+
+def _load_certified_selected_checkpoint(
+    store: ArtifactStore,
+    selected: dict[str, Any] | None,
+) -> tuple[Any | None, str | None]:
+    """Load one certified object used for both replay and final inference."""
+    if selected is None:
+        return None, None
+    from .models.ensemble_checkpoint import load_ensemble_checkpoint_bytes
+
+    metadata = dict(selected.get("runner_metadata") or {})
+    confirmation = store.read_root_json("seed_confirmation.json") or {}
+    raw_checkpoint_path = confirmation.get("submission_checkpoint_path")
+    if not isinstance(raw_checkpoint_path, str) or not raw_checkpoint_path:
+        raise RuntimeError("final certificate has no submission checkpoint path")
+    if metadata.get("checkpoint_schema_version") != 2:
+        raise RuntimeError("final certificate does not select a schema-version-2 bundle")
+    checkpoint_path = Path(raw_checkpoint_path)
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError("final certificate submission checkpoint is missing")
+    descriptor = confirmation.get("submission_bundle")
+    if not isinstance(descriptor, dict) or not descriptor:
+        raise RuntimeError("final certificate has no bundle descriptor")
+    expected_sha256 = descriptor.get("sha256")
+    if not isinstance(expected_sha256, str) or not expected_sha256:
+        raise RuntimeError("final certificate has no bundle content hash")
+    content = checkpoint_path.read_bytes()
+    if len(content) != descriptor.get("size_bytes"):
+        raise RuntimeError("certified bundle size changed during snapshot")
+    if hashlib.sha256(content).hexdigest() != expected_sha256:
+        raise RuntimeError("certified bundle content changed during snapshot")
+    checkpoint = load_ensemble_checkpoint_bytes(
+        content,
+        source_path=checkpoint_path,
+    )
+    return checkpoint, expected_sha256
 
 
 def _write_selected_torch_submission(target: Path, record: dict[str, Any], contract: BenchmarkContract) -> dict[str, Any]:
@@ -743,6 +851,9 @@ def _write_selected_ensemble_submission(
     target: Path,
     record: dict[str, Any],
     contract: BenchmarkContract,
+    *,
+    expected_checkpoint_sha256: str | None = None,
+    loaded_checkpoint: Any | None = None,
 ) -> dict[str, Any]:
     """Score test by INFERENCE from the certified bundle. Never trains.
 
@@ -754,16 +865,19 @@ def _write_selected_ensemble_submission(
     from submit import write_submission
 
     from .metrics import evaluate_predictions
-    from .models.ensemble_fm import predict_ensemble_checkpoint
+    from .models.ensemble_fm import predict_loaded_ensemble_checkpoint
     from .runner import PreparedData
 
     metadata = record.get("runner_metadata") or {}
-    checkpoint_path = _resolve_bundle(metadata, record)
+    if metadata.get("checkpoint_schema_version") != 2:
+        raise RuntimeError("final inference requires a schema-version-2 bundle")
+    if not isinstance(expected_checkpoint_sha256, str) or loaded_checkpoint is None:
+        raise RuntimeError("final inference has no certified in-memory bundle")
     rows = _load_finalization_rows(contract, (contract.test_split,))
 
-    output = predict_ensemble_checkpoint(
+    output = predict_loaded_ensemble_checkpoint(
         PreparedData((), (), rows[contract.test_split]),
-        checkpoint_path,
+        loaded_checkpoint,
     )
     write_submission(target, rows[contract.test_split], output.scores)
     return evaluate_predictions(

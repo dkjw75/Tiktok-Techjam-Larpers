@@ -52,21 +52,59 @@ class EvidencePlanner:
         history: Sequence[Mapping[str, Any]],
         state: ResearchState,
     ) -> ResearchDirection:
-        directions = self._available_directions(history)
-        attempted = {item.get("direction_id") for item in history}
+        evidence_review = next(
+            (
+                item.get("evidence_review")
+                for item in reversed(history)
+                if item.get("record_type") == "evidence_review"
+            ),
+            None,
+        )
+        experiment_history = [
+            item for item in history if item.get("record_type") != "evidence_review"
+        ]
+        directions = self._available_directions(experiment_history)
+        attempted = {item.get("direction_id") for item in experiment_history}
         unexplored = [direction for direction in directions if direction.direction_id not in attempted]
-        pool = unexplored or directions
+        allocation = (
+            str(evidence_review.get("allocation_status"))
+            if isinstance(evidence_review, Mapping)
+            else "EXPLORE"
+        )
+        latest_direction = (
+            str(experiment_history[-1].get("direction_id"))
+            if experiment_history and experiment_history[-1].get("direction_id")
+            else None
+        )
+        if allocation == "EXPLOIT" and latest_direction is not None:
+            preferred = tuple(
+                item for item in directions if item.direction_id == latest_direction
+            )
+            pool = preferred or unexplored or directions
+        elif allocation == "ABANDON" and latest_direction is not None:
+            alternatives = tuple(
+                item for item in directions if item.direction_id != latest_direction
+            )
+            pool = alternatives or unexplored or directions
+        else:
+            pool = unexplored or directions
         rng = random.Random(self.seed + state.completed_iterations)
         chosen = rng.choice(pool)
 
-        if not history:
+        if not experiment_history:
             rationale = "No prior agent-run evidence exists, so begin with broad bootstrap exploration."
         else:
-            recent = history[-3:]
+            recent = experiment_history[-3:]
             recent_decisions = [item.get("decision") for item in recent]
             rationale = (
                 f"Recent decisions were {recent_decisions}; choose a {'new' if unexplored else 'diverse'} "
                 "research direction rather than repeat an identical configuration."
+            )
+        if isinstance(evidence_review, Mapping):
+            rationale = (
+                f"{rationale} Structured evidence allocation is "
+                f"{evidence_review.get('allocation_status', 'unknown')}: "
+                f"{evidence_review.get('rationale', 'no rationale recorded')}"
             )
         return ResearchDirection(
             direction_id=chosen.direction_id,

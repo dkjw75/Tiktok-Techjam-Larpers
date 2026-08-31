@@ -21,6 +21,37 @@ def loader(_data_dir):
     }
 
 
+def complementarity_loader(_data_dir):
+    return {
+        "train": [("train",)],
+        "valid": [
+            (20220421, "u1", "v1", "a1", "1", 1000.0, 1),
+            (20220421, "u1", "v2", "a2", "1", 1000.0, 0),
+            (20220421, "u2", "v3", "a3", "1", 1000.0, 1),
+            (20220421, "u2", "v4", "a4", "1", 1000.0, 0),
+        ],
+        "test": [("test",)],
+    }
+
+
+def complementarity_incumbent(_data, _config, _run_dir):
+    return CandidateOutput(
+        ["u1", "u1", "u2", "u2"],
+        [1, 0, 1, 0],
+        [0.9, 0.1, 0.9, 0.1],
+        metadata={"epochs_run": 8, "configured_epochs": 40, "effective_patience": 4, "stopped_by": "early_stopping"},
+    )
+
+
+def complementarity_candidate(_data, _config, _run_dir):
+    return CandidateOutput(
+        ["u1", "u1", "u2", "u2"],
+        [1, 0, 1, 0],
+        [0.1, 0.9, 0.1, 0.9],
+        metadata={"epochs_run": 8, "configured_epochs": 40, "effective_patience": 4, "stopped_by": "early_stopping"},
+    )
+
+
 def strong_candidate(_data, _config, _run_dir):
     return CandidateOutput(
         ["u", "u"],
@@ -71,6 +102,46 @@ class ControllerTests(unittest.TestCase):
         confirmations = self.store.read_root_json("promotion_confirmations.json") or {}
         confirmations[experiment_id] = certificate
         self.store.write_root_json("promotion_confirmations.json", confirmations)
+
+    def test_nonbaseline_candidate_records_held_user_complementarity(self):
+        runner = ExperimentRunner(self.logger, data_loader=complementarity_loader)
+        controller = ExperimentController(
+            logger=self.logger,
+            runner=runner,
+            validator=self.validator,
+            state=ResearchState(current_best_primary=0.5),
+        )
+        accepted = controller.run_iteration(
+            proposal("exp_incumbent"), complementarity_incumbent
+        )
+        self.assertEqual(accepted.decision, "accepted")
+
+        controller.run_iteration(
+            proposal("exp_candidate"), complementarity_candidate
+        )
+
+        record = self.store.read_iterations()[-1]
+        metadata = record["runner_metadata"]
+        self.assertIn("ensemble_delta_if_added", metadata)
+        self.assertIn("complementarity", metadata)
+        self.assertEqual(
+            metadata["complementarity"]["incumbent_experiment_id"],
+            "exp_incumbent",
+        )
+        self.assertTrue(
+            (self.store.root / "complementarity_partition.json").exists()
+        )
+        self.assertIn(
+            "exp_candidate",
+            self.store.read_root_json("complementarity_uses.json"),
+        )
+
+        controller.run_iteration(
+            proposal("exp_candidate_two"), complementarity_candidate
+        )
+        repeated_metadata = self.store.read_iterations()[-1]["runner_metadata"]
+        self.assertNotIn("ensemble_delta_if_added", repeated_metadata)
+        self.assertIn("globally spent", repeated_metadata["complementarity_error"])
 
     def test_improving_candidate_is_accepted_and_updates_state(self):
         controller = ExperimentController(

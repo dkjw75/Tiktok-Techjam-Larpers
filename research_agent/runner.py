@@ -21,7 +21,7 @@ from .contracts import BENCHMARK_CONTRACT, BenchmarkContract
 from .data_boundary import load_staged_splits, stage_research_splits
 from .logger import ResearchLogger
 from .lineage import candidate_code_sha256
-from .store import RunReservation, RunReservationError
+from .store import ArtifactStore, RunReservation, RunReservationError
 
 
 @dataclass(frozen=True)
@@ -777,6 +777,44 @@ def candidate_output_to_json(output: CandidateOutput) -> dict[str, Any]:
         "scores": _jsonable_sequence(output.scores),
         "metadata": _jsonable(dict(output.metadata)),
     }
+
+
+def load_completed_candidate_output(
+    store: ArtifactStore,
+    experiment_id: str,
+) -> CandidateOutput:
+    """Load one completed prediction vector after verifying its persisted bytes.
+
+    This intentionally exposes only validation candidate output.  It does not
+    load raw data and it refuses partial, failed, or hash-drifted attempts.
+    """
+    experiment_dir = (store.runs_dir / experiment_id).resolve()
+    try:
+        experiment_dir.relative_to(store.runs_dir.resolve())
+    except ValueError as exc:
+        raise ValueError("incumbent experiment identifier is unsafe") from exc
+    status_path = experiment_dir / "status.json"
+    if not status_path.is_file():
+        raise FileNotFoundError(f"incumbent run status is unavailable: {experiment_id}")
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    if status.get("status") != "completed":
+        raise ValueError(f"incumbent run is not completed: {experiment_id}")
+    attempt_id = str(status.get("attempt_id") or "")
+    if Path(attempt_id).name != attempt_id or not attempt_id.startswith("attempt-"):
+        raise ValueError("incumbent attempt identifier is unsafe")
+    attempt_dir = experiment_dir / "attempts" / attempt_id
+    output_path = attempt_dir / "candidate_output.json"
+    result_path = attempt_dir / "runner_result.json"
+    if not output_path.is_file() or not result_path.is_file():
+        raise FileNotFoundError("completed incumbent output evidence is incomplete")
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    if (
+        result.get("candidate_output_sha256") != _file_sha256(output_path)
+        or result.get("candidate_output_size_bytes") != output_path.stat().st_size
+    ):
+        raise ValueError("completed incumbent output hash or size changed")
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    return _candidate_output_from_json(payload)
 
 
 def validate_candidate_alignment(output: CandidateOutput, prepared: PreparedData) -> None:

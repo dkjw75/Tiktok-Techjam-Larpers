@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import math
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from .controller import ExperimentController, IterationResult
 from .critic import ProposalCritic
@@ -11,6 +11,10 @@ from .fidelity import FidelityManager
 from .logger import ResearchLogger
 from .planner import ResearchDirection, ResearchPlanner
 from .review import EvidenceReviewer
+from .research_memory import (
+    FROZEN_CALIBRATED_BASELINE_PRIMARY,
+    render_cycle_summary,
+)
 from .regions import SearchRegionManager
 from .runner import CandidateCallable
 from .search import SearchController
@@ -74,21 +78,43 @@ class AutonomousResearchLoop:
             ):
                 break
             history = self.logger.store.read_iterations()
-            review = self.reviewer.review(history, self.controller.state)
+            resolutions = (
+                self.logger.store.read_root_json("promotion_resolutions.json") or {}
+            )
+            resolved_history = _resolved_history(history, resolutions)
+            review = self.reviewer.review(
+                history,
+                self.controller.state,
+                resolutions,
+            )
             self.logger.log_action(
                 "evidence_reviewed",
                 details={
-                    "action": review.action,
-                    "rationale": review.rationale,
-                    "regions": [snapshot.__dict__ for snapshot in self.regions.snapshots(history)],
+                    **review.as_dict(),
+                    "regions": [
+                        snapshot.__dict__
+                        for snapshot in self.regions.snapshots(resolved_history)
+                    ],
                 },
             )
-            direction = self.planner.propose(history, self.controller.state)
+            planning_history = [
+                *resolved_history,
+                {
+                    "record_type": "evidence_review",
+                    "evidence_review": review.as_dict(),
+                },
+            ]
+            direction = self.planner.propose(planning_history, self.controller.state)
             llm_metadata = getattr(self.planner, "last_metadata", None)
             if llm_metadata:
                 self.logger.log_action("llm_hypothesis_generated", details=dict(llm_metadata))
             self.logger.log_action("research_direction_proposed", details=direction.as_dict())
-            search_state = self.regions.choose_search_state(direction, history, self.controller.state, review)
+            search_state = self.regions.choose_search_state(
+                direction,
+                resolved_history,
+                self.controller.state,
+                review,
+            )
             screened: list[tuple[Any, IterationResult]] = []
             for _screen_index in range(3):
                 proposals = self.search.propose_batch(
@@ -204,7 +230,106 @@ class AutonomousResearchLoop:
                     tuple(promotions),
                 )
             )
+            self.controller.checkpoint_active_runtime()
             self.controller.complete_cycle()
+            cycle_records = self.logger.store.read_iterations()
+            preferred_id = promoted.experiment_id if promoted is not None else None
+            cycle_record = next(
+                (
+                    record
+                    for record in reversed(cycle_records)
+                    if preferred_id is not None
+                    and record.get("experiment_id") == preferred_id
+                ),
+                None,
+            )
+            if cycle_record is None:
+                screen_ids = {result.experiment_id for _, result in screened}
+                candidates = [
+                    record
+                    for record in cycle_records
+                    if record.get("experiment_id") in screen_ids
+                ]
+                if candidates:
+                    cycle_record = max(
+                        candidates,
+                        key=lambda record: float(
+                            (record.get("metrics") or {}).get("primary", -math.inf)
+                        ),
+                    )
+                else:
+                    last_proposal, last_iteration = screened[-1]
+                    cycle_record = {
+                        "experiment_id": last_iteration.experiment_id,
+                        "hypothesis": last_proposal.hypothesis,
+                        "changed_factors": list(last_proposal.changed_factors),
+                        "config": dict(last_proposal.config),
+                        "metrics": dict(last_iteration.metrics or {}),
+                        "decision": last_iteration.decision,
+                        "runner_metadata": {},
+                    }
+            resolutions = (
+                self.logger.store.read_root_json("promotion_resolutions.json") or {}
+            )
+            resolution = resolutions.get(str(cycle_record.get("experiment_id")))
+            certificate = (
+                resolution.get("certificate")
+                if isinstance(resolution, Mapping)
+                else None
+            )
+            seed_status = (
+                f"confirmed={certificate.get('confirmed')}; wins={certificate.get('wins')}/3"
+                if isinstance(certificate, Mapping)
+                else "not confirmed"
+            )
+            summary_record = dict(cycle_record)
+            if isinstance(resolution, Mapping):
+                summary_record["decision"] = resolution.get(
+                    "decision", summary_record.get("decision")
+                )
+                if isinstance(certificate, Mapping):
+                    summary_record["delta_primary"] = certificate.get(
+                        "mean_delta", summary_record.get("delta_primary")
+                    )
+            baseline_scores = (
+                [
+                    float(value)
+                    for value in certificate.get("comparator_scores", [])
+                ]
+                if isinstance(certificate, Mapping)
+                and certificate.get("comparator_experiment_id") == "baseline"
+                else []
+            )
+            baseline_primary = (
+                sum(baseline_scores) / len(baseline_scores)
+                if baseline_scores
+                else FROZEN_CALIBRATED_BASELINE_PRIMARY
+            )
+            lesson = (
+                "Comparable seed confirmation accepted the hypothesis."
+                if summary_record.get("decision") == "accepted"
+                else "The result did not clear every applicable promotion gate."
+            )
+            next_hypothesis = (
+                f"A bounded {direction.direction_id} refinement can improve held-user "
+                "complementarity without increasing seed variance."
+                if summary_record.get("decision") == "accepted"
+                else "A materially different approved direction may add decorrelated "
+                "ranking errors after this configuration failed its gate."
+            )
+            print(
+                render_cycle_summary(
+                    cycle=self.controller.state.completed_cycles,
+                    hypothesis=direction.hypothesis,
+                    record=summary_record,
+                    state=self.controller.state.as_dict(),
+                    contract=self.controller.contract,
+                    seed_status=seed_status,
+                    lesson=lesson,
+                    next_hypothesis=next_hypothesis,
+                    baseline_primary=baseline_primary,
+                )
+            )
             if (
                 screened
                 and all(
@@ -218,7 +343,6 @@ class AutonomousResearchLoop:
                 )
                 break
         return results
-
     def _promote(
         self,
         direction: ResearchDirection,
@@ -387,6 +511,26 @@ class AutonomousResearchLoop:
             )
             certificate = dict(self.promotion_confirmer(record))
             self.controller.resolve_seed_confirmation(experiment_id, certificate)
+
+
+def _resolved_history(
+    history: Sequence[Mapping[str, Any]],
+    resolutions: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Overlay immutable promotion resolutions for allocation-only decisions."""
+    resolved: list[dict[str, Any]] = []
+    for item in history:
+        record = dict(item)
+        resolution = resolutions.get(str(record.get("experiment_id")))
+        if isinstance(resolution, Mapping):
+            record["decision"] = resolution.get("decision", record.get("decision"))
+            certificate = resolution.get("certificate")
+            if isinstance(certificate, Mapping):
+                record["delta_primary"] = certificate.get(
+                    "mean_delta", record.get("delta_primary")
+                )
+        resolved.append(record)
+    return resolved
 
 
 def _spearman_rank_correlation(xs: list[float], ys: list[float]) -> float | None:

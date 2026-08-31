@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from research_agent.contracts import BENCHMARK_CONTRACT
 from research_agent.recertify import _select_best_eligible_screen
+from research_agent.recertify import _validate_source_run
 from research_agent.recertify import recertify_screen_candidate
 from research_agent.controller import IterationResult
 from research_agent.seed_validation import SeedConfirmationResult
@@ -30,21 +31,77 @@ def screen(experiment_id: str, primary: float, *, model: str = "fm_rank_ensemble
 
 
 class RecertificationSelectionTests(unittest.TestCase):
+    def test_recertification_holds_destination_finalization_mutex(self):
+        with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as destination_dir:
+            source = ArtifactStore(source_dir)
+            destination = ArtifactStore(destination_dir)
+            acquired: list[str] = []
+
+            def acquire(path):
+                acquired.append(str(path))
+                path.write_text('{"pid": 1}', encoding="utf-8")
+
+            def locked(*_args, **_kwargs):
+                self.assertTrue((destination.root / ".finalization.lock").exists())
+                self.assertTrue((destination.root / ".recertification.lock").exists())
+                return {"status": "certified"}
+
+            with (
+                patch(
+                    "research_agent.recertify._acquire_finalization_lock",
+                    side_effect=acquire,
+                ),
+                patch(
+                    "research_agent.recertify._recertify_screen_candidate_locked",
+                    side_effect=locked,
+                ),
+            ):
+                result = recertify_screen_candidate(
+                    source,
+                    destination,
+                    screen_experiment_id="exp_005",
+                    candidate=lambda *_args: None,
+                )
+
+            self.assertEqual(result["status"], "certified")
+            self.assertIn(str(source.root / ".finalization.lock"), acquired)
+            self.assertIn(str(destination.root / ".finalization.lock"), acquired)
+            self.assertIn(str(destination.root / ".recertification.lock"), acquired)
+            self.assertFalse((destination.root / ".finalization.lock").exists())
+
+    def test_recertification_rejects_same_source_and_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ArtifactStore(directory)
+            with self.assertRaisesRegex(ValueError, "different stores"):
+                recertify_screen_candidate(
+                    store,
+                    store,
+                    screen_experiment_id="exp_005",
+                    candidate=lambda *_args: None,
+                )
+
     def test_failed_seed_confirmation_reports_rejected_not_baseline_certified(self):
         with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as destination_dir:
             source = ArtifactStore(source_dir)
             source.append_iteration(screen("exp_005", 0.6039))
             destination = ArtifactStore(destination_dir)
+            run_calls: list[str] = []
 
             class FakeController:
                 def __init__(self, *, logger, **_kwargs):
                     self.logger = logger
 
                 def run_iteration(self, proposal, _candidate):
+                    run_calls.append(proposal.experiment_id)
                     record = {
                         **screen("exp_001", 0.6039),
                         "config": dict(proposal.config),
                         "decision": "pending_confirmation",
+                        "state_after": ResearchState(
+                            completed_iterations=1,
+                            stop_reason_code="iteration_budget",
+                            stop_reason="focused scope completed",
+                        ).as_dict(),
                     }
                     self.logger.store.append_iteration(record)
                     return IterationResult(
@@ -77,10 +134,33 @@ class RecertificationSelectionTests(unittest.TestCase):
                 comparison_mode="matched_seed_organizer_baseline",
             )
             selected_confirmation = Mock()
+
+            def fake_manifest(store, _contract, *, create, **_kwargs):
+                manifest = {"immutable_fingerprint": "a" * 64}
+                if create:
+                    store.write_root_json("run_manifest.json", manifest)
+                return manifest
+
             with (
                 patch(
                     "research_agent.recertify.ensure_run_manifest",
-                    return_value={"immutable_fingerprint": "a" * 64},
+                    side_effect=fake_manifest,
+                ),
+                patch(
+                    "research_agent.recertify._validate_source_run",
+                    return_value=ResearchState(
+                        stop_reason_code="wall_clock_budget",
+                        stop_reason="source budget exhausted",
+                    ),
+                ),
+                patch("research_agent.recertify._validate_screen_lineage"),
+                patch(
+                    "research_agent.recertify._preflight_selected_checkpoint",
+                    return_value={
+                        "checkpoint_sha256": "b" * 64,
+                        "validation_primary": 0.6039,
+                        "test_materialized": False,
+                    },
                 ),
                 patch("research_agent.recertify.ExperimentController", FakeController),
                 patch(
@@ -99,9 +179,17 @@ class RecertificationSelectionTests(unittest.TestCase):
                     screen_experiment_id="exp_005",
                     candidate=lambda *_args: None,
                 )
+                resumed = recertify_screen_candidate(
+                    source,
+                    destination,
+                    screen_experiment_id="exp_005",
+                    candidate=lambda *_args: None,
+                )
             self.assertEqual(result["status"], "rejected")
+            self.assertEqual(resumed["status"], "rejected")
             self.assertEqual(result["promotion_decision"], "rejected")
             self.assertEqual(result["submission_bundle"], {})
+            self.assertEqual(run_calls, ["exp_001"])
             selected_confirmation.assert_not_called()
 
     def test_source_with_any_finalization_state_is_rejected(self):
@@ -158,6 +246,73 @@ class RecertificationSelectionTests(unittest.TestCase):
                 "exp_001",
                 contract=BENCHMARK_CONTRACT,
             )
+
+    def test_source_run_must_be_terminal_and_history_consistent(self):
+        with tempfile.TemporaryDirectory() as source_dir:
+            source = ArtifactStore(source_dir)
+            record = screen("exp_005", 0.6039)
+            record["state_after"] = {
+                "completed_iterations": 1,
+                "current_best_experiment_id": "baseline",
+                "current_best_primary": 0.6016,
+                "stop_reason_code": "wall_clock_budget",
+            }
+            source.append_iteration(record)
+            source.write_root_json(
+                "state.json",
+                ResearchState(
+                    completed_iterations=1,
+                    current_best_experiment_id="baseline",
+                    current_best_primary=0.6016,
+                    stop_reason_code="wall_clock_budget",
+                    stop_reason="source budget exhausted",
+                ).as_dict(),
+            )
+            state = _validate_source_run(
+                source,
+                source.read_iterations(),
+                contract=BENCHMARK_CONTRACT,
+            )
+            self.assertTrue(state.stopped)
+
+            source.write_root_json(
+                "state.json",
+                ResearchState(
+                    completed_iterations=1,
+                    current_best_experiment_id="baseline",
+                    current_best_primary=0.6016,
+                ).as_dict(),
+            )
+            with self.assertRaisesRegex(RuntimeError, "terminal stop"):
+                _validate_source_run(
+                    source,
+                    source.read_iterations(),
+                    contract=BENCHMARK_CONTRACT,
+                )
+
+    def test_source_run_with_unresolved_reservation_is_rejected(self):
+        with tempfile.TemporaryDirectory() as source_dir:
+            source = ArtifactStore(source_dir)
+            record = screen("exp_005", 0.6039)
+            terminal = ResearchState(
+                completed_iterations=1,
+                current_best_experiment_id="baseline",
+                current_best_primary=0.6016,
+                stop_reason_code="wall_clock_budget",
+                stop_reason="source budget exhausted",
+            )
+            record["state_after"] = terminal.as_dict()
+            source.append_iteration(record)
+            source.write_root_json("state.json", terminal.as_dict())
+            run_dir = source.runs_dir / "exp_999"
+            run_dir.mkdir(parents=True)
+            (run_dir / ".reservation.lock").write_text("unresolved", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "unresolved runs"):
+                _validate_source_run(
+                    source,
+                    source.read_iterations(),
+                    contract=BENCHMARK_CONTRACT,
+                )
 
 
 if __name__ == "__main__":
