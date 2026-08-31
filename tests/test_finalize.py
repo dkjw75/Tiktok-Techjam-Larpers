@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from research_agent.contracts import BENCHMARK_CONTRACT
 from research_agent.finalize import (
+    FinalizationResult,
     _completed_result,
     _acquire_finalization_lock,
     _finalization_fingerprint,
@@ -23,21 +24,93 @@ from research_agent.store import ArtifactStore
 
 
 class FinalizationTests(unittest.TestCase):
-    def test_stale_partial_finalization_lock_is_recovered(self) -> None:
+    def test_validation_preflight_runs_before_boundary_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ArtifactStore(directory)
+            state = ResearchState(
+                stop_reason_code="iteration_budget",
+                stop_reason="focused scope completed",
+            )
+            store.write_root_json("state.json", state.as_dict())
+            ensure_run_manifest(store, BENCHMARK_CONTRACT, create=True)
+            order: list[str] = []
+            result = FinalizationResult(
+                selected_experiment_id="baseline",
+                selection_primary=0.6016,
+                submission_path=store.root / "final_submission.csv",
+                submission_checked=True,
+                test_metrics=None,
+                report_path=store.root / "research_log.md",
+            )
+
+            def preflight(_selected, _contract):
+                order.append("preflight")
+                return None
+
+            def execute(*_args, **_kwargs):
+                order.append("boundary")
+                return result
+
+            with (
+                patch("research_agent.finalize._preflight_selected_checkpoint", side_effect=preflight),
+                patch("research_agent.finalize._execute_finalization", side_effect=execute),
+            ):
+                actual = finalize_run(store, confirm_final_evaluation=True)
+
+            self.assertIs(actual, result)
+            self.assertEqual(order, ["preflight", "boundary"])
+
+    def test_preflight_failure_never_executes_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ArtifactStore(directory)
+            store.write_root_json(
+                "state.json",
+                ResearchState(
+                    stop_reason_code="iteration_budget",
+                    stop_reason="focused scope completed",
+                ).as_dict(),
+            )
+            ensure_run_manifest(store, BENCHMARK_CONTRACT, create=True)
+            with (
+                patch(
+                    "research_agent.finalize._preflight_selected_checkpoint",
+                    side_effect=RuntimeError("replay mismatch"),
+                ),
+                patch("research_agent.finalize._execute_finalization") as execute,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "replay mismatch"):
+                    finalize_run(store, confirm_final_evaluation=True)
+            execute.assert_not_called()
+            certificate = store.read_root_json("finalization.json")
+            assert certificate is not None
+            self.assertEqual(certificate["status"], "failed_before_test_boundary")
+
+    def test_stale_partial_finalization_lock_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             lock = Path(directory) / ".finalization.lock"
             lock.write_bytes(b"")
             stale = time.time() - 60
             os.utime(lock, (stale, stale))
-
-            descriptor = _acquire_finalization_lock(lock)
-            os.close(descriptor)
+            with self.assertRaisesRegex(RuntimeError, "owner cannot be verified"):
+                _acquire_finalization_lock(lock)
             lock.unlink()
 
     def test_fresh_partial_finalization_lock_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             lock = Path(directory) / ".finalization.lock"
             lock.write_bytes(b"")
+            with self.assertRaisesRegex(RuntimeError, "owner cannot be verified"):
+                _acquire_finalization_lock(lock)
+
+    def test_old_lock_owned_by_live_process_is_never_stolen(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lock = Path(directory) / ".finalization.lock"
+            lock.write_text(
+                __import__("json").dumps({"pid": os.getpid()}),
+                encoding="utf-8",
+            )
+            old = time.time() - 24 * 60 * 60
+            os.utime(lock, (old, old))
             with self.assertRaisesRegex(RuntimeError, "another finalization"):
                 _acquire_finalization_lock(lock)
 
@@ -166,6 +239,8 @@ class FinalizationTests(unittest.TestCase):
                     "decision": "accepted",
                     "comparison_validity": {"valid": True},
                     "runner_metadata": {
+                        "model": "fm_rank_ensemble",
+                        "checkpoint_schema_version": 2,
                         "validation_score_sha256": "c" * 64,
                         "model_code_sha256": model_code,
                     },

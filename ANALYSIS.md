@@ -150,7 +150,10 @@ Source: `runs_ensemble/promotion_resolutions.json`, `runs_ensemble/state.json`.
 passed. This is the **baseline**, scoring 0.5953. The champion has no submission
 yet.
 
-**Test evaluation: UNSPENT.** No `finalization.json` exists.
+**Historical snapshot correction:** this statement was true when written. A
+later defective finalization accessed test labels and was killed before any
+submission or metric persisted. See `AUDIT_REPORT.md`; do not describe the
+global boundary as unspent.
 
 ---
 

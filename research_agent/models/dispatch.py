@@ -15,6 +15,7 @@ from ..runner import CandidateOutput, PreparedData
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 ROUTED_SOURCE_FILES = (
     str(Path(__file__).with_name("ensemble_fm.py")),
+    str(Path(__file__).with_name("ensemble_checkpoint.py")),
     str(Path(__file__).with_name("torch_fm.py")),
     str(Path(__file__).parents[1] / "metrics.py"),
     str(_REPOSITORY_ROOT / "baseline.py"),

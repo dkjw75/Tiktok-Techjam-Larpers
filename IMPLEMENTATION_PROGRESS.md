@@ -38,7 +38,9 @@ The competition test split remains outside research and model-selection flows.
 - Observed canonical split sizes:
   - train: 1,141,112 rows
   - validation: 124,909 rows
-- No competition test evaluation has been authorized or executed.
+- No official test score was completed. A later defective finalization attempt
+  accessed test labels and was killed before any output or metric persisted;
+  that transaction is abandoned and disclosed in `AUDIT_REPORT.md`.
 
 ## Major implementation work completed
 

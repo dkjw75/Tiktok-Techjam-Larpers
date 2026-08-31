@@ -289,11 +289,17 @@ def _output_absence_evidence(
             + ", ".join(present_fields)
         )
 
-    expected_submission = (
-        Path(submission_path)
-        if submission_path is not None
-        else store.root / "final_submission.csv"
-    )
+    original_target = previous.get("submission_target")
+    if not isinstance(original_target, str) or not original_target:
+        raise RuntimeError(
+            "interrupted finalization did not persist its original submission target; "
+            "recovery cannot prove output absence for this legacy transaction"
+        )
+    expected_submission = Path(original_target)
+    if submission_path is not None and Path(submission_path).resolve() != expected_submission.resolve():
+        raise RuntimeError(
+            "recovery submission path differs from the interrupted transaction target"
+        )
     exact_paths = {
         expected_submission,
         store.root / "final_submission.csv",

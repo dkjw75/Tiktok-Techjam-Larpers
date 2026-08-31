@@ -107,6 +107,11 @@ def confirm_selected_candidate(
             submission_checkpoint_path=str(
                 promotion.get("submission_checkpoint_path") or ""
             ) or None,
+            submission_bundle=(
+                dict(promotion["submission_bundle"])
+                if isinstance(promotion.get("submission_bundle"), Mapping)
+                else None
+            ),
             comparison_mode=str(promotion["comparison_mode"]),
             candidate_comparison_groups=tuple(
                 str(value) for value in promotion.get("candidate_comparison_groups", [])
@@ -204,6 +209,11 @@ def confirm_promotion_candidate(
             wins=int(existing["wins"]),
             confirmed=bool(existing["confirmed"]),
             submission_checkpoint_path=existing.get("submission_checkpoint_path"),
+            submission_bundle=(
+                dict(existing["submission_bundle"])
+                if isinstance(existing.get("submission_bundle"), Mapping)
+                else None
+            ),
             comparison_mode=str(existing["comparison_mode"]),
             candidate_comparison_groups=tuple(
                 str(value) for value in existing.get("candidate_comparison_groups", [])

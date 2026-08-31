@@ -20,7 +20,12 @@ class FinalizationRecoveryTests(unittest.TestCase):
         store = ArtifactStore(directory)
         store.write_root_json(
             "finalization.json",
-            {"status": status, "fingerprint": "f" * 64, "error": "interrupted"},
+            {
+                "status": status,
+                "fingerprint": "f" * 64,
+                "submission_target": str((store.root / "final_submission.csv").resolve()),
+                "error": "interrupted",
+            },
         )
         return store
 

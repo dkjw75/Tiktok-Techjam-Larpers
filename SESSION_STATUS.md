@@ -1,7 +1,9 @@
 # Status Sheet — Codex handoff → current
 
 **Base at handoff:** `8557e8d` (`agentv1.0`), everything uncommitted
-**Now:** `152cb70`, working tree clean, 66 files changed since base
+**Snapshot correction:** `runs_ensemble_v3` completed at 08:04:58 SGT and
+stopped on its wall-clock budget before promotion. This file is historical;
+live artifacts and Git are authoritative.
 **Deadline:** 1 Sep 2026, 12:00 SGT
 
 ---
@@ -19,7 +21,7 @@
 | Test leakage | **present** | fixed + 6 proving tests |
 | Champion | `exp_008`, no bundle | **none certified** — recertifying |
 | Submission for champion | none | none |
-| Test evaluation | unspent | **unspent** |
+| Test evaluation | no completed score | one killed contaminated access; no output/metric |
 
 ---
 
@@ -101,10 +103,10 @@ plus two manual interventions recorded in `runs_ensemble` that were unlogged.
 
 | # | item | status |
 |---|---|---|
-| 1 | **Recertification** | **in progress** — `runs_ensemble_v3` on cycle 2, 2 bundles written, no promotion yet |
+| 1 | **Recertification** | `runs_ensemble_v3` stopped; fresh focused recertification required |
 | 2 | **Champion certificate** | none valid; `exp_012` invalidated by the pruning defect |
 | 3 | **Submission for a champion** | none — only the baseline floor (0.5953) exists |
-| 4 | **Final test evaluation** | not crossed |
+| 4 | **Final test evaluation** | not completed; one contaminated access was killed and abandoned |
 | 5 | Full 25-check pre-boundary sequence | ~8 of 25 implemented |
 | 6 | Clean autonomy replay as a separate artifact | not run |
 | 7 | Independent architecture/code review | not run |
@@ -132,7 +134,8 @@ plus two manual interventions recorded in `runs_ensemble` that were unlogged.
 
 ## 5. Next actions, in order
 
-1. `runs_ensemble_v3` completes promotion + three-seed confirmation
+1. Fresh-store full-fidelity promotion of the best v3 screen (`exp_005`, core6)
+   plus matched-seed confirmation
 2. **Replay the champion bundle on real validation data and require an exact
    hash match** before accepting the certificate
 3. Shadow-finalize with validation as fake test

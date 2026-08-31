@@ -157,10 +157,12 @@ bundle and performs inference.
 
 ## 8. Status of the final test boundary
 
-**Not crossed.** No valid submission for the champion exists yet; the only
-submission on disk is the organizer FM baseline floor
+**Official scoring was not completed.** One defective finalization attempt did
+cross the local test-label access boundary and was killed; it produced no
+submission, persisted model output, or test metric and is permanently abandoned.
+No valid submission for the champion exists yet; the only submission on disk is the organizer FM baseline floor
 (`submission_baseline_floor.csv`, 170,588 rows, `submit.py --check` passed).
 
-Recertification under the frozen commit is in progress in `runs_ensemble_v2`.
-Finalization requires that recertification to complete and explicit human
-authorization.
+`runs_ensemble_v3` subsequently completed validation-only screening but stopped
+at its wall-clock budget before promotion. Finalization requires a fresh-store
+full-fidelity recertification, exact bundle replay, and explicit human authorization.

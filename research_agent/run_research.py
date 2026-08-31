@@ -38,6 +38,7 @@ def main() -> None:
             "confirm-seeds",
             "finalize",
             "recover-finalization",
+            "recertify-screen",
         ),
         default="run",
     )
@@ -45,6 +46,14 @@ def main() -> None:
     parser.add_argument("--artifact-dir", default="runs", help="append-only artifact directory")
     parser.add_argument("--data-dir", default=str(BENCHMARK_CONTRACT.data_dir))
     parser.add_argument("--submission-path")
+    parser.add_argument(
+        "--source-artifact-dir",
+        help="prior validation-only run containing the selected screen",
+    )
+    parser.add_argument(
+        "--screen-experiment-id",
+        help="exact prior screen to recertify; it must be the best eligible screen",
+    )
     parser.add_argument(
         "--confirm-final-evaluation",
         action="store_true",
@@ -117,6 +126,26 @@ def main() -> None:
             contract=contract,
         )
         print(json.dumps(result.as_dict(), indent=2, sort_keys=True))
+        return
+
+    if args.command == "recertify-screen":
+        if not args.source_artifact_dir or not args.screen_experiment_id:
+            parser.error(
+                "recertify-screen requires --source-artifact-dir and "
+                "--screen-experiment-id"
+            )
+        from .models.dispatch import run_candidate
+        from .recertify import recertify_screen_candidate
+
+        recertification_result = recertify_screen_candidate(
+            ArtifactStore(args.source_artifact_dir),
+            store,
+            screen_experiment_id=args.screen_experiment_id,
+            candidate=run_candidate,
+            contract=contract,
+            environment=_environment_metadata(),
+        )
+        print(json.dumps(recertification_result, indent=2, sort_keys=True))
         return
 
     if args.command == "run" and persisted:

@@ -116,6 +116,14 @@ class SeedValidationTests(unittest.TestCase):
             self.assertEqual(result.comparison_mode, "matched_seed_organizer_baseline")
             self.assertEqual(result.wins, 3)
             self.assertEqual(len(runner.configs), 6)
+            cached = confirm_promotion_candidate(
+                store,
+                runner,
+                record,
+                candidate=lambda *_args: None,
+            )
+            self.assertEqual(cached.submission_bundle, result.submission_bundle)
+            self.assertEqual(len(runner.configs), 6, "cached evidence must not retrain")
 
 
 if __name__ == "__main__":
