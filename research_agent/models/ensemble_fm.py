@@ -54,10 +54,11 @@ MEMBER_SETS: dict[str, tuple[str, ...]] = {
     "core4": ("fm", "watch", "item", "listwise"),
     "core5": ("fm", "watch", "item", "watchtime", "listwise"),
     "core6": DEFAULT_MEMBERS,
-    "core7k8": DEFAULT_MEMBERS + ("fm_k8",),
-    "core7k32": DEFAULT_MEMBERS + ("fm_k32",),
-    "core8": DEFAULT_MEMBERS + ("fm_k8", "fm_k32"),
 }
+# fm_k8 / fm_k32 are retained as MEMBERS for reproducing past evidence, but are
+# NOT offered as search-space sets: measured at 16628s and 13361s per low-
+# fidelity screen for a +0.00006 gain, they exhausted the budget before any
+# promotion could run.
 WEIGHT_STEP = 0.2
 
 

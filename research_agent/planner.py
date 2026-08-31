@@ -89,7 +89,7 @@ class EvidencePlanner:
                 rationale="Single-model directions are exhausted: every loss change lost to the baseline and every wide feature set lost to the 5-field baseline. Ensembling is the only untested direction whose gain does not require a better individual model.",
                 search_space={
                     "loss": ["ensemble"],
-                    "member_set": ["core4", "core5", "core6", "core7k8", "core7k32", "core8"],
+                    "member_set": ["core4", "core5", "core6"],
                 },
                 success_evidence="Full-fidelity three-seed mean validation primary improves by more than 0.002, targeting at least 0.003, with at least two seed wins.",
                 evaluation_budget={
